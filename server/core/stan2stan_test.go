@@ -122,7 +122,6 @@ func TestQueueStartAtPositionToStan(t *testing.T) {
 func TestQueueDeliverLatestToStan(t *testing.T) {
 	incoming := nuid.Next()
 	outgoing := nuid.Next()
-	msg := "hello world"
 
 	connect := []conf.ConnectorConfig{
 		{
@@ -147,21 +146,24 @@ func TestQueueDeliverLatestToStan(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Send 2 messages, should only get 2nd
-	err = tbs.SC.Publish(incoming, []byte(msg))
+	err = tbs.SC.Publish(incoming, []byte("one"))
 	require.NoError(t, err)
-	err = tbs.SC.Publish(incoming, []byte(msg))
+	err = tbs.SC.Publish(incoming, []byte("two"))
 	require.NoError(t, err)
 
 	err = tbs.StartReplicator(connect)
 	require.NoError(t, err)
 
-	err = tbs.SC.Publish(incoming, []byte(msg))
+	err = tbs.SC.Publish(incoming, []byte("three"))
 	require.NoError(t, err)
 
 	received := tbs.WaitForIt(1, done)
-	require.Equal(t, msg, received)
+	require.Equal(t, "two", received)
 
 	received = tbs.WaitForIt(2, done)
+	require.Equal(t, "three", received)
+
+	received = tbs.WaitForIt(3, done)
 	require.Empty(t, received)
 
 	stats := tbs.Bridge.SafeStats()
@@ -226,7 +228,7 @@ func TestQueueStartAtTimeToStan(t *testing.T) {
 	require.Equal(t, int64(1), connStats.MessagesOut)
 }
 
-func TestQueueDurableSubscriberToStan(t *testing.T) {
+func TestDurableSubscriberToStan(t *testing.T) {
 	incoming := nuid.Next()
 	outgoing := nuid.Next()
 
@@ -234,25 +236,24 @@ func TestQueueDurableSubscriberToStan(t *testing.T) {
 	require.NoError(t, err)
 	defer tbs.Close()
 
+	connect := []conf.ConnectorConfig{
+		{
+			Type:                "StanToStan",
+			IncomingChannel:     incoming,
+			IncomingConnection:  "stan",
+			IncomingDurableName: nuid.Next(),
+
+			OutgoingChannel:    outgoing,
+			OutgoingConnection: "stan",
+		},
+	}
+
 	done := make(chan string)
 	sub, err := tbs.SC.Subscribe(outgoing, func(msg *stan.Msg) {
 		done <- string(msg.Data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
-	require.NoError(t, tbs.NC.FlushTimeout(time.Second*5))
-
-	connect := []conf.ConnectorConfig{
-		{
-			Type:                    "StanToStan",
-			IncomingChannel:         incoming,
-			IncomingConnection:      "stan",
-			IncomingDurableName:     nuid.Next(),
-			IncomingStartAtSequence: 1,
-			OutgoingChannel:         outgoing,
-			OutgoingConnection:      "stan",
-		},
-	}
 
 	err = tbs.StartReplicator(connect)
 	require.NoError(t, err)
@@ -260,9 +261,10 @@ func TestQueueDurableSubscriberToStan(t *testing.T) {
 	err = tbs.SC.Publish(incoming, []byte("one"))
 	require.NoError(t, err)
 
-	tbs.WaitForRequests(1) // get that request through the system
+	received := tbs.WaitForIt(1, done)
+	require.Equal(t, "one", received)
 
-	tbs.StopBridge()
+	tbs.StopReplicator()
 
 	err = tbs.SC.Publish(incoming, []byte("two"))
 	require.NoError(t, err)
@@ -273,16 +275,13 @@ func TestQueueDurableSubscriberToStan(t *testing.T) {
 	err = tbs.StartReplicator(connect)
 	require.NoError(t, err)
 
-	received := tbs.WaitForIt(2, done)
-	require.Equal(t, "one", received)
-
-	received = tbs.WaitForIt(3, done)
+	received = tbs.WaitForIt(1, done) // reset counter, we restarted replicator
 	require.Equal(t, "two", received)
 
-	received = tbs.WaitForIt(4, done)
+	received = tbs.WaitForIt(2, done)
 	require.Equal(t, "three", received)
 
-	received = tbs.WaitForIt(5, done)
+	received = tbs.WaitForIt(4, done)
 	require.Empty(t, received)
 
 	// Should have 2 messages since the relaunch

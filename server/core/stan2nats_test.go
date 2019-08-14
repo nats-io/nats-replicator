@@ -71,7 +71,7 @@ func TestSimpleSendOnStanReceiveOnNats(t *testing.T) {
 	require.True(t, connStats.Connected)
 }
 
-func TestQueueStartAtPosition(t *testing.T) {
+func TestStanToNatsStartAtPosition(t *testing.T) {
 	incoming := nuid.Next()
 	outgoing := nuid.Next()
 	msg := "hello world"
@@ -122,10 +122,9 @@ func TestQueueStartAtPosition(t *testing.T) {
 	require.Equal(t, int64(1), connStats.MessagesOut)
 }
 
-func TestQueueDeliverLatest(t *testing.T) {
+func TestStanToNatsDeliverLatest(t *testing.T) {
 	incoming := nuid.Next()
 	outgoing := nuid.Next()
-	msg := "hello world"
 
 	connect := []conf.ConnectorConfig{
 		{
@@ -152,21 +151,24 @@ func TestQueueDeliverLatest(t *testing.T) {
 	require.NoError(t, tbs.NC.FlushTimeout(time.Second*5))
 
 	// Send 2 messages, should only get 2nd
-	err = tbs.SC.Publish(incoming, []byte(msg))
+	err = tbs.SC.Publish(incoming, []byte("one"))
 	require.NoError(t, err)
-	err = tbs.SC.Publish(incoming, []byte(msg))
+	err = tbs.SC.Publish(incoming, []byte("two"))
 	require.NoError(t, err)
 
 	err = tbs.StartReplicator(connect)
 	require.NoError(t, err)
 
-	err = tbs.SC.Publish(incoming, []byte(msg))
+	err = tbs.SC.Publish(incoming, []byte("three"))
 	require.NoError(t, err)
 
 	received := tbs.WaitForIt(1, done)
-	require.Equal(t, msg, received)
+	require.Equal(t, "two", received)
 
 	received = tbs.WaitForIt(2, done)
+	require.Equal(t, "three", received)
+
+	received = tbs.WaitForIt(3, done)
 	require.Empty(t, received)
 
 	stats := tbs.Bridge.SafeStats()
@@ -175,7 +177,7 @@ func TestQueueDeliverLatest(t *testing.T) {
 	require.Equal(t, int64(2), connStats.MessagesOut)
 }
 
-func TestQueueStartAtTime(t *testing.T) {
+func TestStanToNatsStartAtTime(t *testing.T) {
 	incoming := nuid.Next()
 	outgoing := nuid.Next()
 	msg := "hello world"
@@ -230,7 +232,7 @@ func TestQueueStartAtTime(t *testing.T) {
 	require.Equal(t, int64(1), connStats.MessagesOut)
 }
 
-func TestQueueDurableSubscriber(t *testing.T) {
+func TestStanToNatsDurableSubscriber(t *testing.T) {
 	incoming := nuid.Next()
 	outgoing := nuid.Next()
 
@@ -244,18 +246,17 @@ func TestQueueDurableSubscriber(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
-	require.NoError(t, tbs.NC.FlushTimeout(time.Second*5))
+	require.NoError(t, tbs.NC.FlushTimeout(5*time.Second))
 
 	connect := []conf.ConnectorConfig{
 		{
-			Type:                    "StanToNATS",
-			IncomingChannel:         incoming,
-			IncomingConnection:      "stan",
-			IncomingDurableName:     nuid.Next(),
-			IncomingStartAtSequence: 1,
+			Type:                "StanToNATS",
+			IncomingConnection:  "stan",
+			IncomingChannel:     incoming,
+			IncomingDurableName: nuid.Next(),
 
-			OutgoingSubject:    outgoing,
 			OutgoingConnection: "nats",
+			OutgoingSubject:    outgoing,
 		},
 	}
 
@@ -265,10 +266,13 @@ func TestQueueDurableSubscriber(t *testing.T) {
 	err = tbs.SC.Publish(incoming, []byte("one"))
 	require.NoError(t, err)
 
-	tbs.WaitForRequests(1) // get that request through the system
+	received := tbs.WaitForIt(1, done)
+	require.Equal(t, "one", received)
 
-	tbs.StopBridge()
+	tbs.StopReplicator()
 
+	// Publish two while the replicator is down
+	// these should be waiting for the durable subscriber
 	err = tbs.SC.Publish(incoming, []byte("two"))
 	require.NoError(t, err)
 
@@ -278,16 +282,13 @@ func TestQueueDurableSubscriber(t *testing.T) {
 	err = tbs.StartReplicator(connect)
 	require.NoError(t, err)
 
-	received := tbs.WaitForIt(2, done)
-	require.Equal(t, "one", received)
-
-	received = tbs.WaitForIt(3, done)
+	received = tbs.WaitForIt(1, done) // Reset counter on restart
 	require.Equal(t, "two", received)
 
-	received = tbs.WaitForIt(4, done)
+	received = tbs.WaitForIt(2, done)
 	require.Equal(t, "three", received)
 
-	received = tbs.WaitForIt(5, done)
+	received = tbs.WaitForIt(3, done)
 	require.Empty(t, received)
 
 	// Should have 2 messages since the relaunch

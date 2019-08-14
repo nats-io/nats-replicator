@@ -50,11 +50,11 @@ func (conn *Stan2NATSConnector) Start() error {
 		return fmt.Errorf("%s connector is improperly configured, incoming and outgoing settings are required", conn.String())
 	}
 
-	if !conn.bridge.CheckNATS(incoming) {
+	if !conn.bridge.CheckStan(incoming) {
 		return fmt.Errorf("%s connector requires nats connection named %s to be available", conn.String(), incoming)
 	}
 
-	if !conn.bridge.CheckStan(outgoing) {
+	if !conn.bridge.CheckNATS(outgoing) {
 		return fmt.Errorf("%s connector requires stan connection named %s to be available", conn.String(), outgoing)
 	}
 
@@ -127,7 +127,11 @@ func (conn *Stan2NATSConnector) Start() error {
 	conn.sub = sub
 
 	conn.stats.AddConnect()
-	conn.bridge.Logger().Tracef("opened and reading %s", conn.config.IncomingSubject)
+	if config.IncomingDurableName != "" {
+		conn.bridge.Logger().Tracef("opened and reading %s with durable name %s", conn.config.IncomingChannel, config.IncomingDurableName)
+	} else {
+		conn.bridge.Logger().Tracef("opened and reading %s", conn.config.IncomingChannel)
+	}
 	conn.bridge.Logger().Noticef("started connection %s", conn.String())
 
 	return nil
@@ -145,7 +149,7 @@ func (conn *Stan2NATSConnector) Shutdown() error {
 	conn.sub = nil
 
 	if sub != nil {
-		if err := sub.Unsubscribe(); err != nil {
+		if err := sub.Close(); err != nil {
 			conn.bridge.Logger().Noticef("error unsubscribing for %s, %s", conn.String(), err.Error())
 		}
 	}

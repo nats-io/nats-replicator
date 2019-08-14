@@ -1,6 +1,6 @@
-# Monitoring the NATS-Kafka Bridge
+# Monitoring the NATS-Replicator
 
-The nats-kafka bridge provides optional HTTP/s monitoring. When [configured with a monitoring port](config.md#monitoring) the server will provide two HTTP endpoints:
+The nats-replicator provides optional HTTP/s monitoring. When [configured with a monitoring port](config.md#monitoring) the server will provide two HTTP endpoints:
 
 * [/varz](#varz)
 * [/healthz](#healthz)
@@ -11,9 +11,9 @@ The nats-kafka bridge provides optional HTTP/s monitoring. When [configured with
 
 The `/varz` endpoint returns a JSON encoded set of statistics for the server. These statistics are wrapped in a root level object with the following properties:
 
-* `start_time` - the start time of the bridge, in the bridge's timezone.
-* `current_time` - the current time, in the bridge's timezone.
-* `uptime` - a string representation of the server's up time.
+* `start_time` - the start time of the replicator, in the replicator's timezone.
+* `current_time` - the current time, in the replicator's timezone.
+* `uptime` - a string representation of the replicator's up time.
 * `http_requests` - a map of request paths to counts, the keys are `/`, `/varz` and `/healthz`.
 * `connectors` - an array of statistics for each connector.
 

@@ -11,11 +11,8 @@ This project implements a multi-connector bridge between NATS and NATS streaming
 
 ## WARNING DO NOT USE THIS SERVER YET
 
-* This is the initial checkin
-* This code was just started
-* Tests do not pass
-* Doc is not right
-* Docker is not provided
+* Stan incoming performance needs to be tweaked to allow multiple outstanding acks
+* Doc is a first draft
 
 ## Features
 

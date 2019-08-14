@@ -28,8 +28,6 @@ Use `make test` to run the tests, and `make install` to install. The nats and na
 
 ## Docker
 
-!!! FIX THIS !!!
-
 You can build the docker image using:
 
 ```bash

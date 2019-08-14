@@ -241,8 +241,8 @@ func (tbs *TestEnv) StartNATSandStan(port int, clusterID string, clientID string
 	return nil
 }
 
-// StopBridge stops the bridge
-func (tbs *TestEnv) StopBridge() {
+// StopReplicator stops the bridge
+func (tbs *TestEnv) StopReplicator() {
 	if tbs.Bridge != nil {
 		tbs.Bridge.Stop()
 		tbs.Bridge = nil
