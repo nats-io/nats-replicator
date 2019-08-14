@@ -72,17 +72,24 @@ func (conn *NATS2StanConnector) Start() error {
 			return
 		}
 
-		err := sc.Publish(config.OutgoingChannel, msg.Data)
+		_, err := sc.PublishAsync(config.OutgoingChannel, msg.Data, func(ackguid string, err error) {
+			// Handle the error on the ack handler after we cleaned up the outstanding acks map
+			if err != nil {
+				conn.stats.AddMessageIn(l)
+				conn.bridge.ConnectorError(conn, err)
+				return
+			}
 
-		if traceEnabled {
-			conn.bridge.Logger().Tracef("%s wrote message to stan", conn.String())
-		}
+			if traceEnabled {
+				conn.bridge.Logger().Tracef("%s wrote message to stan", conn.String())
+			}
+
+			conn.stats.AddRequest(l, l, time.Since(start))
+		})
 
 		if err != nil {
 			conn.stats.AddMessageIn(l)
 			conn.bridge.Logger().Noticef("connector publish failure, %s, %s", conn.String(), err.Error())
-		} else {
-			conn.stats.AddRequest(l, l, time.Since(start))
 		}
 	}
 

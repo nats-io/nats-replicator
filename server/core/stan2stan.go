@@ -17,16 +17,24 @@ package core
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats-replicator/server/conf"
 	stan "github.com/nats-io/stan.go"
 )
 
+type stan2stanAckContext struct {
+	incoming  *stan.Msg
+	startTime time.Time
+}
+
 // Stan2StanConnector connects a streaming channel to another streaming channel
 type Stan2StanConnector struct {
 	ReplicatorConnector
-	sub stan.Subscription
+	sub             stan.Subscription
+	ackMu           sync.Mutex
+	outstandingAcks map[string]stan2stanAckContext
 }
 
 // NewStan2StanConnector create a nats to MQ connector
@@ -59,6 +67,7 @@ func (conn *Stan2StanConnector) Start() error {
 
 	conn.bridge.Logger().Tracef("starting connection %s", conn.String())
 
+	conn.outstandingAcks = map[string]stan2stanAckContext{}
 	options := []stan.SubscriptionOption{}
 
 	if config.IncomingDurableName != "" {
@@ -81,7 +90,6 @@ func (conn *Stan2StanConnector) Start() error {
 
 	callback := func(msg *stan.Msg) {
 		start := time.Now()
-		l := int64(len(msg.Data))
 
 		if traceEnabled {
 			conn.bridge.Logger().Tracef("%s received message", conn.String())
@@ -94,21 +102,65 @@ func (conn *Stan2StanConnector) Start() error {
 			return
 		}
 
-		err := sc.Publish(config.OutgoingChannel, msg.Data)
+		guid, err := sc.PublishAsync(config.OutgoingChannel, msg.Data, func(ackguid string, err error) {
+			var ac stan2stanAckContext
 
-		if err != nil {
-			conn.stats.AddMessageIn(l)
-			conn.bridge.Logger().Noticef("connector publish failure, %s, %s", conn.String(), err.Error())
-		} else {
+			conn.ackMu.Lock()
+			if conn.outstandingAcks == nil {
+				conn.ackMu.Unlock()
+				return
+			}
+			ac, ok := conn.outstandingAcks[ackguid]
+			if ok {
+				delete(conn.outstandingAcks, ackguid)
+			}
+			conn.ackMu.Unlock()
+
+			if ac.incoming == nil {
+				return
+			}
+
+			l := int64(len(ac.incoming.Data))
+
+			// Handle the error on the ack handler after we cleaned up the outstanding acks map
+			if err != nil {
+				conn.stats.AddMessageIn(l)
+				conn.bridge.ConnectorError(conn, err)
+				return
+			}
+
 			if traceEnabled {
 				conn.bridge.Logger().Tracef("%s wrote message to stan", conn.String())
 			}
-			msg.Ack()
+
+			err = ac.incoming.Ack()
+
+			if err != nil {
+				conn.stats.AddMessageIn(l)
+				conn.bridge.ConnectorError(conn, err)
+				return
+			}
+
 			if traceEnabled {
 				conn.bridge.Logger().Tracef("%s acked message", conn.String())
 			}
-			conn.stats.AddRequest(l, l, time.Since(start))
+
+			conn.stats.AddRequest(l, l, time.Since(ac.startTime))
+		})
+
+		if err != nil {
+			conn.stats.AddMessageIn(int64(len(msg.Data)))
+			conn.bridge.Logger().Noticef("connector publish failure, %s, %s", conn.String(), err.Error())
+			return
 		}
+
+		conn.ackMu.Lock()
+		conn.outstandingAcks[guid] = stan2stanAckContext{
+			incoming:  msg,
+			startTime: start,
+		}
+		conn.ackMu.Unlock()
+
 	}
 
 	sc := conn.bridge.Stan(incoming)
@@ -152,6 +204,10 @@ func (conn *Stan2StanConnector) Shutdown() error {
 			conn.bridge.Logger().Noticef("error unsubscribing for %s, %s", conn.String(), err.Error())
 		}
 	}
+
+	conn.ackMu.Lock()
+	conn.outstandingAcks = nil
+	conn.ackMu.Unlock()
 
 	return nil // ignore the disconnect error
 }
