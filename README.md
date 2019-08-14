@@ -9,11 +9,6 @@
 
 This project implements a multi-connector bridge between NATS and NATS streaming endpoints.
 
-## WARNING DO NOT USE THIS SERVER YET
-
-* Stan incoming performance needs to be tweaked to allow multiple outstanding acks
-* Doc is a first draft
-
 ## Features
 
 * Arbitrary subjects in NATS, wildcards for incoming messages
