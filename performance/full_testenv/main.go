@@ -53,6 +53,13 @@ func startReplicator(connections []conf.ConnectorConfig) (*core.NATSReplicator, 
 		MaxReconnects:  5,
 		Name:           "nats",
 	})
+	config.NATS = append(config.NATS, conf.NATSConfig{
+		Servers:        []string{natsURL},
+		ConnectTimeout: 2000,
+		ReconnectWait:  2000,
+		MaxReconnects:  5,
+		Name:           "nats2",
+	})
 
 	config.STAN = []conf.NATSStreamingConfig{}
 	config.STAN = append(config.STAN, conf.NATSStreamingConfig{
@@ -60,6 +67,13 @@ func startReplicator(connections []conf.ConnectorConfig) (*core.NATSReplicator, 
 		ClientID:           "perf_test_" + nuid.Next(),
 		Name:               "stan",
 		NATSConnection:     "nats",
+		MaxPubAcksInflight: maxPubAcks,
+	})
+	config.STAN = append(config.STAN, conf.NATSStreamingConfig{
+		ClusterID:          stanClusterID,
+		ClientID:           "perf_test_" + nuid.Next(),
+		Name:               "stan2",
+		NATSConnection:     "nats2",
 		MaxPubAcksInflight: maxPubAcks,
 	})
 
@@ -97,7 +111,7 @@ func main() {
 		{
 			Type:               "StanToStan",
 			IncomingConnection: "stan",
-			OutgoingConnection: "stan",
+			OutgoingConnection: "stan2",
 			IncomingChannel:    incoming,
 			OutgoingChannel:    outgoing,
 		},
@@ -163,6 +177,28 @@ func main() {
 	<-done
 	end := time.Now()
 
+	log.Printf("trying to wait for acks to return to replicator before we shut it down")
+	timeout := time.Duration(5000) * time.Millisecond // 5 second timeout
+	stop := time.Now().Add(timeout)
+	requestsOk := make(chan bool)
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	go func() {
+		for t := range ticker.C {
+			if t.After(stop) {
+				requestsOk <- false
+				break
+			}
+
+			if replicator.SafeStats().RequestCount >= int64(iterations) {
+				requestsOk <- true
+				break
+			}
+		}
+		ticker.Stop()
+	}()
+
+	<-requestsOk
 	stats := replicator.SafeStats()
 	statsJSON, _ := json.MarshalIndent(stats, "", "    ")
 
