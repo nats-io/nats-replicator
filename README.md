@@ -5,7 +5,6 @@
 [![License][License-Image]][License-Url]
 [![ReportCard][ReportCard-Image]][ReportCard-Url]
 [![Build][Build-Status-Image]][Build-Status-Url]
-[![Coverage][Coverage-Image]][Coverage-Url]
 
 This project implements a multi-connector bridge between NATS and NATS streaming endpoints.
 
@@ -51,8 +50,6 @@ An [optional HTTP/HTTPS endpoint](docs/monitoring.md) can be used for monitoring
 [License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
 [Build-Status-Url]: https://travis-ci.com/nats-io/nats-replicator
 [Build-Status-Image]: https://travis-ci.com/nats-io/nats-replicator.svg?branch=master
-[Coverage-Url]: https://coveralls.io/r/nats-io/nats-replicator?branch=master
-[Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-replicator/badge.svg?branch=master
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-replicator
 [ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-replicator
 
