@@ -78,9 +78,26 @@ func (server *NATSReplicator) connectToNATS() error {
 	for _, config := range server.config.NATS {
 		name := config.Name
 		server.logger.Noticef("connecting to NATS with configuration %s", name)
-		options := []nats.Option{nats.MaxReconnects(config.MaxReconnects),
-			nats.ReconnectWait(time.Duration(config.ReconnectWait) * time.Millisecond),
-			nats.Timeout(time.Duration(config.ConnectTimeout) * time.Millisecond),
+
+		maxReconnects := nats.DefaultMaxReconnect
+		reconnectWait := nats.DefaultReconnectWait
+		connectTimeout := nats.DefaultTimeout
+
+		if config.MaxReconnects > 0 {
+			maxReconnects = config.MaxReconnects
+		}
+
+		if config.ReconnectWait > 0 {
+			reconnectWait = time.Duration(config.ReconnectWait) * time.Millisecond
+		}
+
+		if config.ConnectTimeout > 0 {
+			connectTimeout = time.Duration(config.ConnectTimeout) * time.Millisecond
+		}
+
+		options := []nats.Option{nats.MaxReconnects(maxReconnects),
+			nats.ReconnectWait(reconnectWait),
+			nats.Timeout(connectTimeout),
 			nats.ErrorHandler(server.natsError),
 			nats.DiscoveredServersHandler(server.natsDiscoveredServers),
 			nats.DisconnectHandler(server.natsDisconnected),
@@ -131,7 +148,7 @@ func (server *NATSReplicator) connectToSTAN() error {
 			continue
 		}
 
-		server.logger.Noticef("connecting to NATS streaming with configuration %s", name)
+		server.logger.Noticef("connecting to NATS streaming with configuration %s, cluster id is %s", name, config.ClusterID)
 
 		nc, ok := server.nats[config.NATSConnection]
 
@@ -139,16 +156,39 @@ func (server *NATSReplicator) connectToSTAN() error {
 			return fmt.Errorf("stan connection %s requires NATS connection %s", name, config.NATSConnection)
 		}
 
+		pubAckWait := stan.DefaultAckWait
+
+		if config.PubAckWait != 0 {
+			pubAckWait = time.Duration(config.PubAckWait) * time.Millisecond
+		}
+
+		maxPubInFlight := stan.DefaultMaxPubAcksInflight
+
+		if config.MaxPubAcksInflight > 0 {
+			maxPubInFlight = config.MaxPubAcksInflight
+		}
+
+		connectWait := stan.DefaultConnectWait
+
+		if config.ConnectWait > 0 {
+			pubAckWait = time.Duration(config.ConnectWait) * time.Millisecond
+		}
+
 		sc, err := stan.Connect(config.ClusterID, config.ClientID,
 			stan.NatsConn(nc),
-			stan.PubAckWait(time.Duration(config.PubAckWait)*time.Millisecond),
-			stan.MaxPubAcksInflight(config.MaxPubAcksInflight),
-			stan.ConnectWait(time.Duration(config.ConnectWait)*time.Millisecond),
+			stan.PubAckWait(pubAckWait),
+			stan.MaxPubAcksInflight(maxPubInFlight),
+			stan.ConnectWait(connectWait),
 			stan.SetConnectionLostHandler(server.stanConnectionLost),
 			func(o *stan.Options) error {
-				o.DiscoverPrefix = config.DiscoverPrefix
+				if config.DiscoverPrefix != "" {
+					o.DiscoverPrefix = config.DiscoverPrefix
+				} else {
+					o.DiscoverPrefix = "_STAN.discover"
+				}
 				return nil
 			})
+
 		if err != nil {
 			return err
 		}
