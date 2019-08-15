@@ -32,7 +32,7 @@ An [optional HTTP/HTTPS endpoint](docs/monitoring.md) can be used for monitoring
 
 ## Todo
 
-* Integrate with travis and coveralls
+* Integrate with coveralls
 
 ## Documentation
 
@@ -49,7 +49,7 @@ An [optional HTTP/HTTPS endpoint](docs/monitoring.md) can be used for monitoring
 [License-Url]: https://www.apache.org/licenses/LICENSE-2.0
 [License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
 [Build-Status-Url]: https://travis-ci.com/nats-io/nats-replicator
-[Build-Status-Image]: https://travis-ci.com/nats-io/nats-replicator.svg?branch=master
+[Build-Status-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-replicator
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-replicator
 [ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-replicator
 
