@@ -17,6 +17,7 @@ package core
 
 import (
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats-replicator/server/conf"
 	nats "github.com/nats-io/nats.go"
@@ -51,6 +52,7 @@ func TestSimpleSendOnNATSReceiveOnNATS(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
+	require.NoError(t, tbs.NC.FlushTimeout(time.Second*5))
 
 	err = tbs.NC.Publish(incoming, []byte(msg))
 	require.NoError(t, err)
@@ -96,6 +98,7 @@ func TestWildcardSendOnNATSReceiveOnNATS(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
+	require.NoError(t, tbs.NC.FlushTimeout(time.Second*5))
 
 	err = tbs.NC.Publish(incoming, []byte(msg))
 	require.NoError(t, err)
@@ -141,6 +144,7 @@ func TestSimpleSendOnNATSReceiveOnNATSWithQueue(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
+	require.NoError(t, tbs.NC.FlushTimeout(time.Second*5))
 
 	err = tbs.NC.Publish(incoming, []byte(msg))
 	require.NoError(t, err)
@@ -183,8 +187,8 @@ func TestSimpleSendOnQueueReceiveOnNatsWithTLS(t *testing.T) {
 		done <- string(msg.Data)
 	})
 	require.NoError(t, err)
-	tbs.NC.Flush()
 	defer sub.Unsubscribe()
+	require.NoError(t, tbs.NC.FlushTimeout(time.Second*5))
 
 	err = tbs.NC.Publish(incoming, []byte(msg))
 	require.NoError(t, err)
