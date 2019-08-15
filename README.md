@@ -6,7 +6,7 @@
 [![ReportCard][ReportCard-Image]][ReportCard-Url]
 [![Build][Build-Status-Image]][Build-Status-Url]
 
-This project implements a multi-connector bridge between NATS and NATS streaming endpoints.
+This project implements a multi-connector bridge, copier, replicator between NATS and NATS streaming endpoints.
 
 ## Features
 
@@ -20,13 +20,13 @@ This project implements a multi-connector bridge between NATS and NATS streaming
 
 ## Overview
 
-The bridge runs as a single process with a configured set of connectors mapping a between a NATS subject or a NATS streaming channel. Each connector is a one-way bridge.
+The replicator runs as a single process with a configured set of connectors mapping a between a NATS subject or a NATS streaming channel. Each connector is a one-way replicator.
 
 Connectors share a NATS connection and an optional connection to the NATS streaming server.
 
 Request-reply is not supported.
 
-The bridge is [configured with a NATS server-like format](docs/config.md), in a single file and uses the NATS logger.
+The replicator is [configured with a NATS server-like format](docs/config.md), in a single file and uses the NATS logger.
 
 An [optional HTTP/HTTPS endpoint](docs/monitoring.md) can be used for monitoring.
 
@@ -36,7 +36,7 @@ An [optional HTTP/HTTPS endpoint](docs/monitoring.md) can be used for monitoring
 
 ## Documentation
 
-* [Build & Run the Bridge](docs/buildandrun.md)
+* [Build & Run the Replicator](docs/buildandrun.md)
 * [Configuration](docs/config.md)
 * [Monitoring](docs/monitoring.md)
 

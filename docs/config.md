@@ -213,3 +213,44 @@ For streaming connections, the channel setting is required (directionality depen
 * `incomingdurablename` - (optional) durable name for the streaming subscription (if appropriate.)
 * `incomingstartatsequence` - (optional) start position, use -1 for start with last received, 0 for deliver all available (the default.)
 * `incomingstartattime` - (optional) the start position as a time, in Unix seconds since the epoch, mutually exclusive with `startatsequence`.
+
+For example, a simple configuration may look something like:
+
+```yaml
+
+reconnectinterval: 5000,
+
+logging: {
+  Time: true,
+  Debug: true,
+  Trace: false,
+  Colors: true,
+  PID: false,
+},
+
+monitoring: {
+  httpport: 9090,
+}
+
+nats: [
+{
+  Name: "nats",
+  Servers: ["localhost:4222"],
+  ConnectTimeout: 5000,
+  MaxReconnects: 5,
+  ReconnectWait: 5000,
+}
+]
+
+connect: [
+  {
+      type: NATSToNATS,
+      id: "alpha",
+      IncomingSubject: "in",
+      IncomingConnection: "nats",
+      OutgoingSubject: "out",
+      OutgoingConnection: "nats",
+  },
+],
+
+```
