@@ -42,7 +42,14 @@ func TestNATSConfig(t *testing.T) {
 	config := DefaultConfig()
 	configString := `
 	{
-		connectors: [],
+		connect: [
+			{
+				incomingConnection: "one"
+				Outgoingconnection: "one"
+				incomingSubject: "test"
+				OutgoingSubject: "hello"
+			}
+		],
 		nats: [
 			{
 				name: "one"
@@ -65,6 +72,11 @@ func TestNATSConfig(t *testing.T) {
 	require.Equal(t, config.Monitoring.ReadTimeout, 2000)
 	require.Equal(t, config.Logging.Trace, false)
 	require.Equal(t, config.Logging.Debug, false)
+	require.Len(t, config.Connect, 1)
+	require.Equal(t, config.Connect[0].IncomingConnection, "one")
+	require.Equal(t, config.Connect[0].OutgoingConnection, "one")
+	require.Equal(t, config.Connect[0].IncomingSubject, "test")
+	require.Equal(t, config.Connect[0].OutgoingSubject, "hello")
 }
 
 func TestNATSConfigWithTags(t *testing.T) {
