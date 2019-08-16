@@ -17,24 +17,16 @@ package core
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats-replicator/server/conf"
 	stan "github.com/nats-io/stan.go"
 )
 
-type stan2stanAckContext struct {
-	incoming  *stan.Msg
-	startTime time.Time
-}
-
 // Stan2StanConnector connects a streaming channel to another streaming channel
 type Stan2StanConnector struct {
 	ReplicatorConnector
-	sub             stan.Subscription
-	ackMu           sync.Mutex
-	outstandingAcks map[string]stan2stanAckContext
+	sub stan.Subscription
 }
 
 // NewStan2StanConnector create a nats to MQ connector
@@ -67,7 +59,6 @@ func (conn *Stan2StanConnector) Start() error {
 
 	conn.bridge.Logger().Tracef("starting connection %s", conn.String())
 
-	conn.outstandingAcks = map[string]stan2stanAckContext{}
 	options := []stan.SubscriptionOption{}
 
 	if config.IncomingDurableName != "" {
@@ -88,6 +79,11 @@ func (conn *Stan2StanConnector) Start() error {
 	options = append(options, stan.SetManualAckMode())
 	traceEnabled := conn.bridge.Logger().TraceEnabled()
 
+	osc := conn.bridge.Stan(outgoing)
+	if osc == nil {
+		return fmt.Errorf("%s connector requires stan connection named %s to be available", conn.String(), outgoing)
+	}
+
 	callback := func(msg *stan.Msg) {
 		start := time.Now()
 
@@ -95,34 +91,9 @@ func (conn *Stan2StanConnector) Start() error {
 			conn.bridge.Logger().Tracef("%s received message", conn.String())
 		}
 
-		sc := conn.bridge.Stan(outgoing)
+		_, err := osc.PublishAsync(config.OutgoingChannel, msg.Data, func(ackguid string, err error) {
+			l := int64(len(msg.Data))
 
-		if sc == nil {
-			conn.bridge.ConnectorError(conn, fmt.Errorf("%s connector requires stan connection named %s to be available", conn.String(), outgoing))
-			return
-		}
-
-		guid, err := sc.PublishAsync(config.OutgoingChannel, msg.Data, func(ackguid string, err error) {
-			var ac stan2stanAckContext
-
-			conn.ackMu.Lock()
-			if conn.outstandingAcks == nil {
-				conn.ackMu.Unlock()
-				return
-			}
-			ac, ok := conn.outstandingAcks[ackguid]
-			if ok {
-				delete(conn.outstandingAcks, ackguid)
-			}
-			conn.ackMu.Unlock()
-
-			if ac.incoming == nil {
-				return
-			}
-
-			l := int64(len(ac.incoming.Data))
-
-			// Handle the error on the ack handler after we cleaned up the outstanding acks map
 			if err != nil {
 				conn.stats.AddMessageIn(l)
 				conn.bridge.ConnectorError(conn, err)
@@ -133,9 +104,7 @@ func (conn *Stan2StanConnector) Start() error {
 				conn.bridge.Logger().Tracef("%s wrote message to stan", conn.String())
 			}
 
-			err = ac.incoming.Ack()
-
-			if err != nil {
+			if err := msg.Ack(); err != nil {
 				conn.stats.AddMessageIn(l)
 				conn.bridge.ConnectorError(conn, err)
 				return
@@ -145,22 +114,15 @@ func (conn *Stan2StanConnector) Start() error {
 				conn.bridge.Logger().Tracef("%s acked message", conn.String())
 			}
 
-			conn.stats.AddRequest(l, l, time.Since(ac.startTime))
+			conn.stats.AddRequest(l, l, time.Since(start))
 		})
 
+		// TODO(dlc) - Should we attempt to make sure message is resent before ack timeout from incoming?
 		if err != nil {
 			conn.stats.AddMessageIn(int64(len(msg.Data)))
 			conn.bridge.Logger().Noticef("connector publish failure, %s, %s", conn.String(), err.Error())
 			return
 		}
-
-		conn.ackMu.Lock()
-		conn.outstandingAcks[guid] = stan2stanAckContext{
-			incoming:  msg,
-			startTime: start,
-		}
-		conn.ackMu.Unlock()
-
 	}
 
 	sc := conn.bridge.Stan(incoming)
@@ -204,10 +166,6 @@ func (conn *Stan2StanConnector) Shutdown() error {
 			conn.bridge.Logger().Noticef("error unsubscribing for %s, %s", conn.String(), err.Error())
 		}
 	}
-
-	conn.ackMu.Lock()
-	conn.outstandingAcks = nil
-	conn.ackMu.Unlock()
 
 	return nil // ignore the disconnect error
 }

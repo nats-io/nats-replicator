@@ -43,7 +43,7 @@ type NATSReplicator struct {
 	logger logging.Logger
 	config conf.NATSReplicatorConfig
 
-	natsLock sync.Mutex
+	natsLock sync.RWMutex
 	nats     map[string]*nats.Conn
 	stan     map[string]stan.Conn
 
@@ -255,16 +255,18 @@ func (server *NATSReplicator) FatalError(format string, args ...interface{}) {
 
 // NATS hosts a shared nats connection for the connectors
 func (server *NATSReplicator) NATS(name string) *nats.Conn {
-	server.natsLock.Lock()
-	defer server.natsLock.Unlock()
-	return server.nats[name]
+	server.natsLock.RLock()
+	nc := server.nats[name]
+	server.natsLock.RUnlock()
+	return nc
 }
 
 // Stan hosts a shared streaming connection for the connectors
 func (server *NATSReplicator) Stan(name string) stan.Conn {
-	server.natsLock.Lock()
-	defer server.natsLock.Unlock()
-	return server.stan[name]
+	server.natsLock.RLock()
+	sc := server.stan[name]
+	server.natsLock.RUnlock()
+	return sc
 }
 
 // CheckNATS returns true if the bridge is connected to nats
