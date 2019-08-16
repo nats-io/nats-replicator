@@ -184,7 +184,7 @@ func (server *NATSReplicator) HandleRoot(w http.ResponseWriter, r *http.Request)
   <body>
     <img src="http://nats.io/img/logo.png" alt="NATS">
     <br/>
-		<a href=/varz?pretty=true>varz</a><br/>
+		<a href=/varz>varz</a><br/>
 		<a href=/healthz>healthz</a><br/>
     <br/>
   </body>
@@ -197,17 +197,17 @@ func (server *NATSReplicator) HandleVarz(w http.ResponseWriter, r *http.Request)
 	server.httpReqStats[VarzPath]++
 	server.statsLock.Unlock()
 
-	pretty := strings.ToLower(r.URL.Query().Get("pretty")) == "true"
+	compact := strings.ToLower(r.URL.Query().Get("compact")) == "true"
 
 	stats := server.stats()
 
 	var err error
 	var varzJSON []byte
 
-	if pretty {
-		varzJSON, err = json.MarshalIndent(stats, "", "  ")
-	} else {
+	if compact {
 		varzJSON, err = json.Marshal(stats)
+	} else {
+		varzJSON, err = json.MarshalIndent(stats, "", "  ")
 	}
 
 	if err != nil {
