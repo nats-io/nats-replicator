@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -183,7 +184,7 @@ func (server *NATSReplicator) HandleRoot(w http.ResponseWriter, r *http.Request)
   <body>
     <img src="http://nats.io/img/logo.png" alt="NATS">
     <br/>
-		<a href=/varz>varz</a><br/>
+		<a href=/varz?pretty=true>varz</a><br/>
 		<a href=/healthz>healthz</a><br/>
     <br/>
   </body>
@@ -196,9 +197,18 @@ func (server *NATSReplicator) HandleVarz(w http.ResponseWriter, r *http.Request)
 	server.httpReqStats[VarzPath]++
 	server.statsLock.Unlock()
 
+	pretty := strings.ToLower(r.URL.Query().Get("pretty")) == "true"
+
 	stats := server.stats()
 
-	varzJSON, err := json.Marshal(stats)
+	var err error
+	var varzJSON []byte
+
+	if pretty {
+		varzJSON, err = json.MarshalIndent(stats, "", "  ")
+	} else {
+		varzJSON, err = json.Marshal(stats)
+	}
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

@@ -5,6 +5,8 @@ The nats-replicator provides optional HTTP/s monitoring. When [configured with a
 * [/varz](#varz)
 * [/healthz](#healthz)
 
+You can also just navigate to the monitoring port, i.e. http://localhost:9090, and a page will point you at these two paths.
+
 <a name="varz"></a>
 
 ## /varz
@@ -33,6 +35,8 @@ Each object in the connectors array, one per connector, will contain the followi
 * `q75` - the 75% quantile for response times, in nanoseconds.
 * `q90` - the 90% quantile for response times, in nanoseconds.
 * `q95` - the 95% quantile for response times, in nanoseconds.
+
+Pass the URL property pretty=true to get formatted JSON. For example, http://localhost:8080/varz?pretty=true.
 
 <a name="healthz"></a>
 

@@ -305,7 +305,7 @@ func TestSimpleSendOnStanReceiveOnNatsWithTLS(t *testing.T) {
 
 	connect := []conf.ConnectorConfig{
 		{
-			Type:               "StanToNATS",
+			Type:               "stantonats", // test with different casing
 			IncomingChannel:    incoming,
 			OutgoingSubject:    outgoing,
 			IncomingConnection: "stan",

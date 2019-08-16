@@ -17,6 +17,7 @@ package core
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/nats-io/nats-replicator/server/conf"
@@ -38,14 +39,14 @@ type Connector interface {
 
 // CreateConnector builds a connector from the supplied configuration
 func CreateConnector(config conf.ConnectorConfig, bridge *NATSReplicator) (Connector, error) {
-	switch config.Type {
-	case conf.NATSToNATS:
+	switch strings.ToLower(config.Type) {
+	case strings.ToLower(conf.NATSToNATS):
 		return NewNATS2NATSConnector(bridge, config), nil
-	case conf.StanToNATS:
+	case strings.ToLower(conf.StanToNATS):
 		return NewStan2NATSConnector(bridge, config), nil
-	case conf.NATSToStan:
+	case strings.ToLower(conf.NATSToStan):
 		return NewNATS2StanConnector(bridge, config), nil
-	case conf.StanToStan:
+	case strings.ToLower(conf.StanToStan):
 		return NewStan2StanConnector(bridge, config), nil
 	default:
 		return nil, fmt.Errorf("unknown connector type %q in configuration", config.Type)

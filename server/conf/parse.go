@@ -157,7 +157,6 @@ func get(data map[string]interface{}, key string, confTag string) interface{} {
 		if ok {
 			return val
 		}
-		return nil
 	}
 
 	val, ok := data[key]

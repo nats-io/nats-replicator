@@ -40,7 +40,7 @@ const (
 // NATS and STAN connections are specified in a map, where the key is a name used by
 // the connector to reference a connection.
 type NATSReplicatorConfig struct {
-	ReconnectInterval int // milliseconds
+	ReconnectInterval int `conf:"reconnect_interval"` // milliseconds
 
 	Logging    logging.Config
 	NATS       []NATSConfig
@@ -95,13 +95,13 @@ func (tlsConf *TLSConf) MakeTLSConfig() (*tls.Config, error) {
 
 // HTTPConfig is used to specify the host/port/tls for an HTTP server
 type HTTPConfig struct {
-	HTTPHost  string
-	HTTPPort  int
-	HTTPSPort int
+	HTTPHost  string `conf:"http_host"`
+	HTTPPort  int    `conf:"http_port"`
+	HTTPSPort int    `conf:"https_port"`
 	TLS       TLSConf
 
-	ReadTimeout  int //milliseconds
-	WriteTimeout int //milliseconds
+	ReadTimeout  int `conf:"read_timeout"`  //milliseconds
+	WriteTimeout int `conf:"write_timeout"` //milliseconds
 }
 
 // NATSConfig configuration for a NATS connection
@@ -109,26 +109,26 @@ type NATSConfig struct {
 	Name    string
 	Servers []string
 
-	ConnectTimeout int //milliseconds
-	ReconnectWait  int //milliseconds
-	MaxReconnects  int
+	ConnectTimeout int `conf:"connect_timeout"` //milliseconds
+	ReconnectWait  int `conf:"reconnect_wait"`  //milliseconds
+	MaxReconnects  int `conf:"max_reconnects"`
 
 	TLS             TLSConf
-	UserCredentials string
+	UserCredentials string `conf:"user_credentials"`
 }
 
 // NATSStreamingConfig configuration for a STAN connection
 type NATSStreamingConfig struct {
 	Name      string
-	ClusterID string
-	ClientID  string
+	ClusterID string `conf:"cluster_id"`
+	ClientID  string `conf:"client_id"`
 
-	PubAckWait         int //milliseconds
-	DiscoverPrefix     string
-	MaxPubAcksInflight int
-	ConnectWait        int // milliseconds
+	PubAckWait         int    `conf:"pub_ack_wait"` //milliseconds
+	DiscoverPrefix     string `conf:"discovery_prefix"`
+	MaxPubAcksInflight int    `conf:"max_pubacks_inflight"`
+	ConnectWait        int    `conf:"connect_wait"` // milliseconds
 
-	NATSConnection string //name of the nats connection for this streaming connection
+	NATSConnection string `conf:"nats_connection"` //name of the nats connection for this streaming connection
 }
 
 // DefaultConfig generates a default configuration with
@@ -156,17 +156,17 @@ type ConnectorConfig struct {
 	ID   string // user specified id for a connector, will be defaulted if none is provided
 	Type string // Can be any of the type constants (NATSToStan, ...)
 
-	IncomingConnection string // Name of the incoming connection (of either type), can be the same as outgoingConnection
-	OutgoingConnection string // Name of the outgoing connection (of either type), can be the same as incomingConnection
+	IncomingConnection string `conf:"incoming_connection"` // Name of the incoming connection (of either type), can be the same as outgoingConnection
+	OutgoingConnection string `conf:"outgoing_connection"` // Name of the outgoing connection (of either type), can be the same as incomingConnection
 
-	IncomingChannel         string // Used for stan connections
-	IncomingDurableName     string // Optional, used for stan connections
-	IncomingStartAtSequence int64  // Start position for stan connection, -1 means StartWithLastReceived, 0 means DeliverAllAvailable (default)
-	IncomingStartAtTime     int64  // Start time, as Unix, time takes precedence over sequence
+	IncomingChannel         string `conf:"incoming_channel"`          // Used for stan connections
+	IncomingDurableName     string `conf:"incoming_durable_name"`     // Optional, used for stan connections
+	IncomingStartAtSequence int64  `conf:"incoming_startat_sequence"` // Start position for stan connection, -1 means StartWithLastReceived, 0 means DeliverAllAvailable (default)
+	IncomingStartAtTime     int64  `conf:"incoming_startat_time"`     // Start time, as Unix, time takes precedence over sequence
 
-	IncomingSubject   string // Used for nats connections
-	IncomingQueueName string // Optional, used for nats connections
+	IncomingSubject   string `conf:"incoming_subject"`    // Used for nats connections
+	IncomingQueueName string `conf:"incoming_queue_name"` // Optional, used for nats connections
 
-	OutgoingChannel string // Used for stan connections
-	OutgoingSubject string // Used for nats connections
+	OutgoingChannel string `conf:"outgoing_channel"` // Used for stan connections
+	OutgoingSubject string `conf:"outgoing_subject"` // Used for nats connections
 }

@@ -32,9 +32,9 @@ import (
 const (
 	serverCert = "../../resources/certs/server-cert.pem"
 	serverKey  = "../../resources/certs/server-key.pem"
-	clientCert = "../../resources/certs/client-cert.pem"
-	clientKey  = "../../resources/certs/client-key.pem"
-	caFile     = "../../resources/certs/truststore.pem"
+	// clientCert = "../../resources/certs/client-cert.pem"
+	// clientKey  = "../../resources/certs/client-key.pem"
+	caFile = "../../resources/certs/truststore.pem"
 )
 
 // TestEnv encapsulate a bridge test environment

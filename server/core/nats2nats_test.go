@@ -170,7 +170,7 @@ func TestSimpleSendOnQueueReceiveOnNatsWithTLS(t *testing.T) {
 
 	connect := []conf.ConnectorConfig{
 		{
-			Type:               "NATSToNATS",
+			Type:               "natstonats", // test with different casing
 			IncomingSubject:    incoming,
 			IncomingConnection: "nats",
 			OutgoingConnection: "nats",

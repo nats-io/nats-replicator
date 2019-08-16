@@ -17,6 +17,8 @@ The configuration file format matches the NATS server and supports file includes
 include "./includes/connectors.conf"
 ```
 
+All properties are semi-case-insensitive. If you use the case in the doc it is ok, or use all lower case. Also, multi-word properties have two forms, to match your style better.
+
 <a name="specify"></a>
 
 ## Specifying the Configuration File
@@ -41,7 +43,7 @@ reconnectinterval: 5000,
 
 can currently contain settings for:
 
-* `reconnectinterval` - this value, in milliseconds, is the time used in between reconnection attempts for a connector when it fails. For example, if a connector loses access to NATS, the replicator will try to restart it every `reconnectinterval` milliseconds.
+* `reconnectinterval` or `reconnect_interval` - this value, in milliseconds, is the time used in between reconnection attempts for a connector when it fails. For example, if a connector loses access to NATS, the replicator will try to restart it every `reconnectinterval` milliseconds.
 
 ## TLS <a name="tls"></a>
 
@@ -93,12 +95,12 @@ monitoring: {
 
 Is used to configure an HTTP or HTTPS port, as well as TLS settings when HTTPS is used.
 
-* `httphost` - the network interface to publish monitoring on, valid for HTTP or HTTPS. An empty value will tell the replicator to use all available network interfaces.
-* `httpport` - the port for HTTP monitoring, no TLS configuration is expected, a value of -1 will tell the replicator to use an ephemeral port, the port will be logged on startup.
+* `httphost` or `http_host` - the network interface to publish monitoring on, valid for HTTP or HTTPS. An empty value will tell the replicator to use all available network interfaces.
+* `httpport` or `http_port` - the port for HTTP monitoring, no TLS configuration is expected, a value of -1 will tell the replicator to use an ephemeral port, the port will be logged on startup.
 
 `2019/03/20 12:06:38.027822 [INF] starting http monitor on :59744`
 
-* `httpsport` - the port for HTTPS monitoring, a TLS configuration is expected, a value of -1 will tell the server to use an ephemeral port, the port will be logged on startup.
+* `httpsport` or `https_port` - the port for HTTPS monitoring, a TLS configuration is expected, a value of -1 will tell the server to use an ephemeral port, the port will be logged on startup.
 * `tls` - a [TLS configuration](#tls).
 
 The `httpport` and `httpsport` settings are mutually exclusive, if both are set to a non-zero value the replicator will not start.
@@ -125,11 +127,11 @@ NATS can be configured with the following properties:
 
 * `name` - the unique name used to refer to this configuration/connection
 * `servers` - an array of server URLS
-* `connecttimeout` - the time, in milliseconds, to wait before failing to connect to the NATS server
-* `reconnectwait` - the time, in milliseconds, to wait between reconnect attempts
-* `maxreconnects` - the maximum number of reconnects to try before exiting the replicator with an error.
+* `connecttimeout` or `connect_timeout` - the time, in milliseconds, to wait before failing to connect to the NATS server
+* `reconnectwait` or `reconnect_wait` - the time, in milliseconds, to wait between reconnect attempts
+* `maxreconnects` or `max_reconnects` - the maximum number of reconnects to try before exiting the replicator with an error.
 * `tls` - (optional) [TLS configuration](#tls). If the NATS server uses unverified TLS with a valid certificate, this setting isn't required.
-* `usercredentials` - (optional) the path to a credentials file for connecting to NATs.
+* `usercredentials` or `user_credentials` - (optional) the path to a credentials file for connecting to NATs.
 
 <a name="stan"></a>
 
@@ -153,13 +155,13 @@ Multiple streaming connections could use the same NATS connection.
 NATS streaming can be configured with the following properties:
 
 * `name` - the unique name used to refer to this configuration/connection
-* `natsconnection` - the unique name of the nats connection to use for this streaming connection
-* `clusterid` - the cluster id for the NATS streaming server.
-* `clientid` - the client id for the connection.
-* `pubackwait` - the time, in milliseconds, to wait before a publish fails due to a timeout.
-* `discoverprefix` - the discover prefix for the streaming server.
-* `maxpubacksinflight` - maximum pub ACK messages that can be in flight for this connection.
-* `connectwait` - the time, in milliseconds, to wait before failing to connect to the streaming server.
+* `natsconnection` or `nats_connection` - the unique name of the nats connection to use for this streaming connection
+* `clusterid` or `cluster_id` - the cluster id for the NATS streaming server.
+* `clientid` or `client_id` - the client id for the connection.
+* `pubackwait` or `pub_ack_wait` - the time, in milliseconds, to wait before a publish fails due to a timeout.
+* `discoverprefix` or `discover_prefix` - the discover prefix for the streaming server.
+* `maxpubacksinflight` or `max_pubacks_inflight` - maximum pub ACK messages that can be in flight for this connection, defaults to streaming default.
+* `connectwait` or `connect_wait` - the time, in milliseconds, to wait before failing to connect to the streaming server.
 
 <a name="connectors"></a>
 
@@ -185,7 +187,9 @@ The most important property in the connector configuration is the `type`. The ty
 * `NATSToNATS` - a subject to subject connector
 * `NATSToStan` - a subject to streaming connector
 * `StanToNATS` - a streaming to subject connector
-* `STANToSTAN` - a streaming to streaming connector
+* `StanToStan` - a streaming to streaming connector
+
+These types are case insensitive, so "natstonats" is the same as "NATSToNATS".
 
 All connectors can have an optional id, which is used in monitoring:
 
@@ -193,14 +197,14 @@ All connectors can have an optional id, which is used in monitoring:
 
 All connectors require a configuration for the connection to use:
 
-* `incomingconnection` - the name of a NATS or streaming connection to subscribe to
-* `outgoingconnection` - the name of a NATS or streaming connection to publish to
+* `incomingconnection` or `incoming_connection` - the name of a NATS or streaming connection to subscribe to
+* `outgoingconnection` or `outgoing_connection` - the name of a NATS or streaming connection to publish to
 
 For NATS connections, specify:
 
-* `incomingsubject` - the subject to subscribe to, depending on the connections direction.
-* `incomingqueuename` - the queue group to use in subscriptions, this is optional but useful for load balancing.
-* `outgoingsubject` - the subject to publish to, depending on the connections direction.
+* `incomingsubject` or `incoming_subject` - the subject to subscribe to, depending on the connections direction.
+* `incomingqueuename` or `incoming_queue_name` - the queue group to use in subscriptions, this is optional but useful for load balancing.
+* `outgoingsubject` or `outgoing_subject` - the subject to publish to, depending on the connections direction.
 
 Keep in mind that NATS queue groups do not guarantee ordering, since the queue subscribers can be on different nats-servers in a cluster. So if you have to replicators running with connectors on the same NATS queue/subject pair and have a high message rate you may get messages to the receiver "out of order." Also, note that there is no outgoing queue.
 
@@ -208,11 +212,11 @@ These settings are directional depending so a `NATSToStan` connector would use a
 
 For streaming connections, the channel setting is required (directionality dependent), the others are optional:
 
-* `incomingchannel` - the streaming channel to subscribe to.
-* `outgoingchannel` - the streaming channel to publish to.
-* `incomingdurablename` - (optional) durable name for the streaming subscription (if appropriate.)
-* `incomingstartatsequence` - (optional) start position, use -1 for start with last received, 0 for deliver all available (the default.)
-* `incomingstartattime` - (optional) the start position as a time, in Unix seconds since the epoch, mutually exclusive with `startatsequence`.
+* `incomingchannel` or `incoming_channel` - the streaming channel to subscribe to.
+* `outgoingchannel` or `outgoing_channel` - the streaming channel to publish to.
+* `incomingdurablename` or `incoming_durable_name` - (optional) durable name for the streaming subscription (if appropriate.)
+* `incomingstartatsequence` or `incoming_startat_sequence` - (optional) start position, use -1 for start with last received, 0 for deliver all available (the default.)
+* `incomingstartattime` or `incoming_startat_time` - (optional) the start position as a time, in Unix seconds since the epoch, mutually exclusive with `startatsequence`.
 
 For example, a simple configuration may look something like:
 

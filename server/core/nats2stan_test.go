@@ -121,7 +121,7 @@ func TestSimpleSendOnQueueReceiveOnStanWithTLS(t *testing.T) {
 
 	connect := []conf.ConnectorConfig{
 		{
-			Type:               "NATSToStan",
+			Type:               "natstostan", // test with different casing
 			OutgoingChannel:    channel,
 			IncomingSubject:    subject,
 			IncomingConnection: "nats",

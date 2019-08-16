@@ -66,3 +66,48 @@ func TestNATSConfig(t *testing.T) {
 	require.Equal(t, config.Logging.Trace, false)
 	require.Equal(t, config.Logging.Debug, false)
 }
+
+func TestNATSConfigWithTags(t *testing.T) {
+	config := DefaultConfig()
+	configString := `
+	{
+		reconnect_interval: 1000
+		connect: [
+			{
+				incoming_connection: "one"
+				outgoing_connection: "one"
+				incoming_subject: "test"
+				outgoing_subject: "hello"
+			}
+		],
+		nats: [
+			{
+				name: "one"
+				servers: ["nats://localhost:4222"]
+				connect_timeout: 5000
+			}
+		]
+		monitoring: {
+			http_port: -1,
+			read_timeout: 2000,
+		}
+	}
+	`
+
+	err := LoadConfigFromString(configString, &config, false)
+	require.NoError(t, err)
+
+	require.Equal(t, config.ReconnectInterval, 1000)
+	require.Equal(t, 1, len(config.NATS))
+	require.Equal(t, 1, len(config.NATS[0].Servers))
+	require.Equal(t, config.NATS[0].Servers[0], "nats://localhost:4222")
+	require.Equal(t, config.NATS[0].ConnectTimeout, 5000)
+	require.Equal(t, config.Monitoring.ReadTimeout, 2000)
+	require.Equal(t, config.Logging.Trace, false)
+	require.Equal(t, config.Logging.Debug, false)
+	require.Len(t, config.Connect, 1)
+	require.Equal(t, config.Connect[0].IncomingConnection, "one")
+	require.Equal(t, config.Connect[0].OutgoingConnection, "one")
+	require.Equal(t, config.Connect[0].IncomingSubject, "test")
+	require.Equal(t, config.Connect[0].OutgoingSubject, "hello")
+}

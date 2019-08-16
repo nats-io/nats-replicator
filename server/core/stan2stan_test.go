@@ -298,7 +298,7 @@ func TestSimpleSendOnStanReceiveOnStanWithTLS(t *testing.T) {
 
 	connect := []conf.ConnectorConfig{
 		{
-			Type:               "StanToStan",
+			Type:               "stantostan", // test with different casing
 			IncomingChannel:    incoming,
 			IncomingConnection: "stan",
 			OutgoingChannel:    outgoing,
