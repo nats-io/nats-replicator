@@ -120,7 +120,7 @@ func (conn *Stan2StanConnector) Start() error {
 		// TODO(dlc) - Should we attempt to make sure message is resent before ack timeout from incoming?
 		if err != nil {
 			conn.stats.AddMessageIn(int64(len(msg.Data)))
-			conn.bridge.Logger().Noticef("connector publish failure, %s, %s", conn.String(), err.Error())
+			conn.bridge.ConnectorError(conn, err)
 			return
 		}
 	}
