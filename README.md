@@ -51,7 +51,7 @@ An [optional HTTP/HTTPS endpoint](docs/monitoring.md) can be used for monitoring
 [Build-Status-Url]: https://travis-ci.org/nats-io/nats-replicator
 [Build-Status-Image]: https://travis-ci.org/nats-io/nats-replicator.svg?branch=master
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-replicator
-[ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-replicator
+[ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-replicator?v=2
 
 <a name="license"></a>
 
