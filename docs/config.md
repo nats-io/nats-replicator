@@ -130,6 +130,8 @@ NATS can be configured with the following properties:
 * `connecttimeout` or `connect_timeout` - the time, in milliseconds, to wait before failing to connect to the NATS server
 * `reconnectwait` or `reconnect_wait` - the time, in milliseconds, to wait between reconnect attempts
 * `maxreconnects` or `max_reconnects` - the maximum number of reconnects to try before exiting the replicator with an error.
+* `noecho` or `no_echo` - don't echo messages back from this client
+* `norandom` or `no_random` - don't randomize servers in the connect list
 * `tls` - (optional) [TLS configuration](#tls). If the NATS server uses unverified TLS with a valid certificate, this setting isn't required.
 * `usercredentials` or `user_credentials` - (optional) the path to a credentials file for connecting to NATs.
 

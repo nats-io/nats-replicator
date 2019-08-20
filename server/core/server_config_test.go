@@ -43,6 +43,8 @@ func TestStartWithConfigFileFlag(t *testing.T) {
 			{
 				name: "one"
 				servers: ["%s"]
+				norandom: true
+				no_echo: true
 			}
 		]
 		monitoring: {
@@ -73,6 +75,8 @@ func TestStartWithConfigFileFlag(t *testing.T) {
 	require.Equal(t, 1, len(server.config.NATS))
 	require.Equal(t, 1, len(server.config.NATS[0].Servers))
 	require.Equal(t, server.config.NATS[0].Servers[0], tbs.natsURL)
+	require.Equal(t, server.config.NATS[0].NoRandom, true)
+	require.Equal(t, server.config.NATS[0].NoEcho, true)
 	require.Equal(t, server.config.Monitoring.ReadTimeout, 2000)
 	require.Equal(t, server.config.Logging.Trace, true)
 	require.Equal(t, server.config.Logging.Debug, true)

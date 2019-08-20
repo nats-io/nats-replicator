@@ -112,6 +112,8 @@ type NATSConfig struct {
 	ConnectTimeout int `conf:"connect_timeout"` //milliseconds
 	ReconnectWait  int `conf:"reconnect_wait"`  //milliseconds
 	MaxReconnects  int `conf:"max_reconnects"`
+	NoRandom        bool `conf:"no_random"`
+	NoEcho        bool `conf:"no_echo"`
 
 	TLS             TLSConf
 	UserCredentials string `conf:"user_credentials"`

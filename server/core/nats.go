@@ -105,6 +105,14 @@ func (server *NATSReplicator) connectToNATS() error {
 			nats.ClosedHandler(server.natsClosed),
 		}
 
+		if config.NoRandom {
+			options = append(options, nats.DontRandomize())
+		}
+
+		if config.NoEcho {
+			options = append(options, nats.NoEcho())
+		}
+
 		if config.TLS.Root != "" {
 			options = append(options, nats.RootCAs(config.TLS.Root))
 		}
