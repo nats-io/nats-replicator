@@ -18,6 +18,7 @@ package logging
 
 // Config defines logging flags for the NATS logger
 type Config struct {
+	Hide   bool
 	Time   bool
 	Debug  bool
 	Trace  bool

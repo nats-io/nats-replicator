@@ -26,6 +26,7 @@ func NewNATSLogger(conf Config) Logger {
 	return &NATSLogger{
 		logger:       l,
 		traceEnabled: conf.Trace,
+		hide:         conf.Hide,
 	}
 }
 
@@ -33,6 +34,7 @@ func NewNATSLogger(conf Config) Logger {
 type NATSLogger struct {
 	logger       *logger.Logger
 	traceEnabled bool
+	hide         bool
 }
 
 // TraceEnabled returns true if tracing is configured, useful for fast path logging
@@ -47,30 +49,48 @@ func (logger *NATSLogger) Close() error {
 
 // Debugf forwards to the nats logger
 func (logger *NATSLogger) Debugf(format string, v ...interface{}) {
+	if logger.hide {
+		return
+	}
 	logger.logger.Debugf(format, v...)
 }
 
 // Errorf forwards to the nats logger
 func (logger *NATSLogger) Errorf(format string, v ...interface{}) {
+	if logger.hide {
+		return
+	}
 	logger.logger.Errorf(format, v...)
 }
 
 // Fatalf forwards to the nats logger
 func (logger *NATSLogger) Fatalf(format string, v ...interface{}) {
+	if logger.hide {
+		return
+	}
 	logger.logger.Fatalf(format, v...)
 }
 
 // Noticef  forwards to the nats logger
 func (logger *NATSLogger) Noticef(format string, v ...interface{}) {
+	if logger.hide {
+		return
+	}
 	logger.logger.Noticef(format, v...)
 }
 
 // Tracef forwards to the nats logger
 func (logger *NATSLogger) Tracef(format string, v ...interface{}) {
+	if logger.hide || !logger.traceEnabled {
+		return
+	}
 	logger.logger.Tracef(format, v...)
 }
 
 // Warnf forwards to the nats logger
 func (logger *NATSLogger) Warnf(format string, v ...interface{}) {
+	if logger.hide {
+		return
+	}
 	logger.logger.Warnf(format, v...)
 }
