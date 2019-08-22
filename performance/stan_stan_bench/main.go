@@ -171,7 +171,9 @@ func main() {
 		}
 	} else {
 		log.Printf("Direct mode uses the same nats url and stan cluster id for both connections")
-		outgoing = incoming
+		if in == "" && out == "" {
+			outgoing = incoming
+		}
 		stanClusterID2 = stanClusterID
 		natsURL2 = natsURL
 	}
