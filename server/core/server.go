@@ -338,8 +338,6 @@ func (server *NATSReplicator) startReconnectTicker() {
 				// Don't get reconnect lock until we try connectors
 				// Nats lock will protect the nats and stan map
 
-				server.logger.Noticef("reconnect ticker")
-
 				// Wait for nats to be reconnected
 				for _, c := range server.config.NATS {
 					if !server.CheckNATS(c.Name) {
