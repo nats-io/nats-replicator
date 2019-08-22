@@ -21,8 +21,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats-replicator/server/conf"
-
 	nats "github.com/nats-io/nats.go"
 	stan "github.com/nats-io/stan.go"
 )
@@ -163,7 +161,7 @@ func (server *NATSReplicator) connectToSTAN() error {
 		connectWait := stan.DefaultConnectWait
 
 		if config.ConnectWait > 0 {
-			pubAckWait = time.Duration(config.ConnectWait) * time.Millisecond
+			connectWait = time.Duration(config.ConnectWait) * time.Millisecond
 		}
 
 		maxPings := stan.DefaultPingMaxOut
@@ -257,28 +255,6 @@ func (server *NATSReplicator) CheckNATS(name string) bool {
 func (server *NATSReplicator) CheckStan(name string) bool {
 	server.natsLock.RLock()
 	defer server.natsLock.RUnlock()
-
-	var stanConfig conf.NATSStreamingConfig
-	ok := false
-
-	for _, c := range server.config.STAN {
-		if c.Name == name {
-			stanConfig = c
-			ok = true
-			break
-		}
-	}
-
-	if !ok {
-		return false
-	}
-
-	natsName := stanConfig.NATSConnection
-	nc, ok := server.nats[natsName]
-
-	if !ok || nc == nil || nc.ConnectedUrl() == "" {
-		return false
-	}
 
 	sc, ok := server.stan[name]
 

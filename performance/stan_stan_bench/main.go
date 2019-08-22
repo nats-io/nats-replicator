@@ -44,6 +44,8 @@ var subOnly bool
 var showStats bool
 var hideReplicatorLog bool
 var showProgress bool
+var in string
+var out string
 
 func startReplicator(connections []conf.ConnectorConfig) (*core.NATSReplicator, error) {
 	config := conf.DefaultConfig()
@@ -117,6 +119,8 @@ func main() {
 	flag.BoolVar(&showStats, "stats", false, "print replicator stats, if not direct")
 	flag.BoolVar(&hideReplicatorLog, "hide", false, "hide the replicator log")
 	flag.BoolVar(&showProgress, "progress", true, "show progress")
+	flag.StringVar(&in, "in", "", "channel to publish to, and replicate, defaults to a random string")
+	flag.StringVar(&out, "out", "", "channel to read from and replicate to, defaults to a random string")
 	flag.Parse()
 
 	var replicator *core.NATSReplicator
@@ -134,6 +138,14 @@ func main() {
 
 	if stanClusterID2 == "" {
 		stanClusterID2 = stanClusterID
+	}
+
+	if in != "" {
+		incoming = in
+	}
+
+	if out != "" {
+		outgoing = out
 	}
 
 	if pubOnly || subOnly {
@@ -189,6 +201,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("error connecting to stan, %s", err.Error())
 	}
+
+	log.Printf("Incoming/Replicated channel %s : Outgoing/Subscribed channel: %s", incoming, outgoing)
 
 	var start time.Time
 

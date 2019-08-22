@@ -152,7 +152,7 @@ func (server *NATSReplicator) Start() error {
 	server.logger = logging.NewNATSLogger(server.config.Logging)
 	server.connectors = []Connector{}
 	server.needReconnect = map[string]Connector{}
-	server.cancelReconnect = make(chan bool)
+	server.cancelReconnect = make(chan bool, 1)
 
 	server.logger.Noticef("starting NATS-Replicator, version %s", version)
 	server.logger.Noticef("server time is %s", server.startTime.Format(time.UnixDate))
@@ -194,8 +194,10 @@ func (server *NATSReplicator) Stop() {
 	server.Unlock()
 
 	// cancel outside the lock
+	server.logger.Noticef("cancelling reconnect timer")
 	server.cancelReconnect <- true
 
+	server.logger.Noticef("closing connectors")
 	server.connectorLock.Lock()
 	for _, c := range server.connectors {
 		err := c.Shutdown()
@@ -206,18 +208,21 @@ func (server *NATSReplicator) Stop() {
 	}
 	server.connectorLock.Unlock()
 
+	server.logger.Noticef("closing stan connections")
 	server.natsLock.Lock()
 	for name, sc := range server.stan {
 		sc.Close()
 		server.logger.Noticef("disconnected from NATS streaming connection named %s", name)
 	}
 
+	server.logger.Noticef("closing nats connections")
 	for name, nc := range server.nats {
 		nc.Close()
 		server.logger.Noticef("disconnected from NATS connection named %s", name)
 	}
 	server.natsLock.Unlock()
 
+	server.logger.Noticef("closing http server used for monitoring")
 	server.Lock()
 	err := server.StopMonitoring()
 	if err != nil {
