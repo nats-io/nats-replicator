@@ -347,7 +347,7 @@ func (server *NATSReplicator) startReconnectTicker() {
 				}
 
 				// Make sure stan is up, if it should be
-				server.logger.Noticef("trying to reconnect to nats streaming")
+				//server.logger.Noticef("trying to reconnect to nats streaming")
 				err := server.connectToSTAN() // this may be a no-op if all the connections are there but is not true once we get the lock in the connect
 
 				if err != nil {
