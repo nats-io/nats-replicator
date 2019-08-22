@@ -130,6 +130,9 @@ type NATSStreamingConfig struct {
 	MaxPubAcksInflight int    `conf:"max_pubacks_inflight"`
 	ConnectWait        int    `conf:"connect_wait"` // milliseconds
 
+	PingInterval int `conf:"ping_interval"` // seconds
+	MaxPings     int `conf:"max_pings"`
+
 	NATSConnection string `conf:"nats_connection"` //name of the nats connection for this streaming connection
 }
 

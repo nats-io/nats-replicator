@@ -18,7 +18,6 @@ package core
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -47,11 +46,11 @@ type NATSReplicator struct {
 	nats     map[string]*nats.Conn
 	stan     map[string]stan.Conn
 
-	connectors []Connector
-
-	reconnectLock  sync.Mutex
-	reconnect      map[string]Connector
-	reconnectTimer *reconnectTimer
+	connectorLock   sync.RWMutex
+	connectors      []Connector
+	needReconnect   map[string]Connector
+	reconnectTicker *time.Ticker
+	cancelReconnect chan bool
 
 	statsLock     sync.Mutex
 	httpReqStats  map[string]int64
@@ -152,7 +151,8 @@ func (server *NATSReplicator) Start() error {
 	server.startTime = time.Now()
 	server.logger = logging.NewNATSLogger(server.config.Logging)
 	server.connectors = []Connector{}
-	server.reconnect = map[string]Connector{}
+	server.needReconnect = map[string]Connector{}
+	server.cancelReconnect = make(chan bool)
 
 	server.logger.Noticef("starting NATS-Replicator, version %s", version)
 	server.logger.Noticef("server time is %s", server.startTime.Format(time.UnixDate))
@@ -177,24 +177,26 @@ func (server *NATSReplicator) Start() error {
 		return err
 	}
 
+	server.startReconnectTicker()
+
 	return nil
 }
 
-// Stop the account server
+// Stop the replicator
 func (server *NATSReplicator) Stop() {
 	server.Lock()
-	defer server.Unlock()
-
 	if !server.running {
+		server.Unlock()
 		return // already stopped
 	}
-
-	server.logger.Noticef("stopping bridge")
-
+	server.logger.Noticef("stopping replicator")
 	server.running = false
-	server.stopReconnectTimer()
-	server.reconnect = map[string]Connector{} // clear the map
+	server.Unlock()
 
+	// cancel outside the lock
+	server.cancelReconnect <- true
+
+	server.connectorLock.Lock()
 	for _, c := range server.connectors {
 		err := c.Shutdown()
 
@@ -202,24 +204,29 @@ func (server *NATSReplicator) Stop() {
 			server.logger.Noticef("error shutting down connector %s", err.Error())
 		}
 	}
+	server.connectorLock.Unlock()
 
-	for name, nc := range server.nats {
-		nc.Close()
-		server.logger.Noticef("disconnected from NATS connection named %s", name)
-	}
-
+	server.natsLock.Lock()
 	for name, sc := range server.stan {
 		sc.Close()
 		server.logger.Noticef("disconnected from NATS streaming connection named %s", name)
 	}
 
+	for name, nc := range server.nats {
+		nc.Close()
+		server.logger.Noticef("disconnected from NATS connection named %s", name)
+	}
+	server.natsLock.Unlock()
+
+	server.Lock()
 	err := server.StopMonitoring()
 	if err != nil {
 		server.logger.Noticef("error shutting down monitoring server %s", err.Error())
 	}
+	server.Unlock()
 }
 
-// assumes the lock is held by the caller
+// assumes the server lock is held by the caller
 func (server *NATSReplicator) initializeConnectors() error {
 	connectorConfigs := server.config.Connect
 
@@ -235,7 +242,7 @@ func (server *NATSReplicator) initializeConnectors() error {
 	return nil
 }
 
-// assumes the lock is held by the caller
+// assumes the server lock is held by the caller
 func (server *NATSReplicator) startConnectors() error {
 	for _, c := range server.connectors {
 		if err := c.Start(); err != nil {
@@ -246,88 +253,22 @@ func (server *NATSReplicator) startConnectors() error {
 	return nil
 }
 
-// FatalError stops the server, prints the messages and exits
-func (server *NATSReplicator) FatalError(format string, args ...interface{}) {
-	server.Stop()
-	log.Fatalf(format, args...)
-	os.Exit(-1)
-}
-
-// NATS hosts a shared nats connection for the connectors
-func (server *NATSReplicator) NATS(name string) *nats.Conn {
-	server.natsLock.RLock()
-	nc := server.nats[name]
-	server.natsLock.RUnlock()
-	return nc
-}
-
-// Stan hosts a shared streaming connection for the connectors
-func (server *NATSReplicator) Stan(name string) stan.Conn {
-	server.natsLock.RLock()
-	sc := server.stan[name]
-	server.natsLock.RUnlock()
-	return sc
-}
-
-// CheckNATS returns true if the bridge is connected to nats
-func (server *NATSReplicator) CheckNATS(name string) bool {
-	server.natsLock.Lock()
-	defer server.natsLock.Unlock()
-
-	nc, ok := server.nats[name]
-
-	if ok && nc != nil {
-		return nc.ConnectedUrl() != ""
-	}
-
-	return false
-}
-
-// CheckStan returns true if the bridge is connected to stan
-func (server *NATSReplicator) CheckStan(name string) bool {
-	server.natsLock.Lock()
-	defer server.natsLock.Unlock()
-
-	var stanConfig conf.NATSStreamingConfig
-	ok := false
-
-	for _, c := range server.config.STAN {
-		if c.Name == name {
-			stanConfig = c
-			ok = true
-			break
-		}
-	}
-
-	if !ok {
-		return false
-	}
-
-	natsName := stanConfig.NATSConnection
-	nc, ok := server.nats[natsName]
-
-	if !ok || nc == nil || nc.ConnectedUrl() == "" {
-		return false
-	}
-
-	sc, ok := server.stan[name]
-	return ok && sc != nil
-}
-
 // ConnectorError is called by a connector if it has a failure that requires a reconnect
 func (server *NATSReplicator) ConnectorError(connector Connector, err error) {
 	if !server.checkRunning() {
 		return
 	}
 
-	server.reconnectLock.Lock()
-	defer server.reconnectLock.Unlock()
+	server.connectorLock.Lock()
+	defer server.connectorLock.Unlock()
 
-	_, check := server.reconnect[connector.ID()]
+	_, check := server.needReconnect[connector.ID()]
 
 	if check {
 		return // we already have that connector, no need to stop or pring any messages
 	}
+
+	server.needReconnect[connector.ID()] = connector
 
 	description := connector.String()
 	server.logger.Errorf("a connector error has occurred, replicator will try to restart %s, %s", description, err.Error())
@@ -337,10 +278,6 @@ func (server *NATSReplicator) ConnectorError(connector Connector, err error) {
 	if err != nil {
 		server.logger.Warnf("error shutting down connector %s, replicator will try to restart, %s", description, err.Error())
 	}
-
-	server.reconnect[connector.ID()] = connector
-
-	server.ensureReconnectTimer()
 }
 
 // checkConnections loops over the connections and has them each check check their requirements
@@ -351,11 +288,11 @@ func (server *NATSReplicator) checkConnections() {
 		return
 	}
 
-	server.reconnectLock.Lock()
-	defer server.reconnectLock.Unlock()
+	server.connectorLock.Lock()
+	defer server.connectorLock.Unlock()
 
 	for _, connector := range server.connectors {
-		_, check := server.reconnect[connector.ID()]
+		_, check := server.needReconnect[connector.ID()]
 
 		if check {
 			continue // we already have that connector, no need to stop or pring any messages
@@ -367,6 +304,8 @@ func (server *NATSReplicator) checkConnections() {
 			continue // connector is happy
 		}
 
+		server.needReconnect[connector.ID()] = connector
+
 		description := connector.String()
 		server.logger.Errorf("a connector error has occurred, trying to restart %s, %s", description, err.Error())
 
@@ -375,81 +314,68 @@ func (server *NATSReplicator) checkConnections() {
 		if err != nil {
 			server.logger.Warnf("error shutting down connector %s, trying to restart, %s", description, err.Error())
 		}
-
-		server.reconnect[connector.ID()] = connector
 	}
-
-	server.ensureReconnectTimer()
 }
 
 // requires the reconnect lock be held by the caller
 // spawns a go routine that will acquire the lock for handling reconnect tasks
-func (server *NATSReplicator) ensureReconnectTimer() {
-	if server.reconnectTimer != nil {
-		return
-	}
-
-	timer := newReconnectTimer()
-	server.reconnectTimer = timer
+func (server *NATSReplicator) startReconnectTicker() {
+	interval := server.config.ReconnectInterval
+	server.reconnectTicker = time.NewTicker(time.Duration(interval) * time.Millisecond)
 
 	go func() {
-		interval := server.config.ReconnectInterval
-		doReconnect := <-timer.After(time.Duration(interval) * time.Millisecond) // This is the reconnect timer
-		if !doReconnect {
-			return
-		}
 
-		server.reconnectLock.Lock()
-		defer server.reconnectLock.Unlock()
+		// Loop until we get cancelled
+	Loop:
+		for {
+			select {
+			case <-server.reconnectTicker.C:
+				// Don't get reconnect lock until we try connectors
+				// Nats lock will protect the nats and stan map
 
-		server.reconnectTimer = nil
+				server.logger.Noticef("reconnect ticker")
 
-		// Wait for nats to be reconnected
-		for _, c := range server.config.NATS {
-			if !server.CheckNATS(c.Name) {
-				server.logger.Noticef("nats connection %s is down, will try reconnecting to streaming and restarting connectors in %d milliseconds", c.Name, interval)
-				server.ensureReconnectTimer()
+				// Wait for nats to be reconnected
+				for _, c := range server.config.NATS {
+					if !server.CheckNATS(c.Name) {
+						server.logger.Noticef("nats connection %s is down, will try retry in %d milliseconds", c.Name, interval)
+						continue Loop
+					}
+				}
+
+				// Make sure stan is up, if it should be
+				server.logger.Noticef("trying to reconnect to nats streaming")
+				err := server.connectToSTAN() // this may be a no-op if all the connections are there but is not true once we get the lock in the connect
+
+				if err != nil {
+					server.logger.Noticef("error restarting streaming connection, will retry in %d milliseconds", interval, err.Error())
+					continue Loop
+				}
+
+				server.connectorLock.Lock()
+				// Do all the reconnects, we will redo the ones we have to
+				for id, connector := range server.needReconnect {
+
+					// keep checking if we should exit
+					if !server.checkRunning() {
+						continue Loop // go back to the loop so we can read the cancel request
+					}
+
+					server.logger.Noticef("trying to restart connector %s", connector.String())
+					err := connector.Start()
+
+					if err != nil {
+						server.logger.Noticef("error restarting connector %s, will retry in %d milliseconds, %s", connector.String(), interval, err.Error())
+					} else {
+						delete(server.needReconnect, id)
+					}
+				}
+				server.connectorLock.Unlock()
+			case <-server.cancelReconnect:
+				server.logger.Noticef("reconnect ticker cancelled")
 				return
 			}
 		}
 
-		// Make sure stan is up, if it should be
-		server.logger.Noticef("trying to reconnect to nats streaming")
-		err := server.connectToSTAN() // this may be a no-op if server.stan == nil was true but is not true once we get the lock in the connect
-
-		if err != nil {
-			server.logger.Noticef("error restarting streaming connection, will retry in %d milliseconds", interval, err.Error())
-			server.ensureReconnectTimer()
-			return
-		}
-
-		// Do all the reconnects
-		for id, connector := range server.reconnect {
-			server.logger.Noticef("trying to restart connector %s", connector.String())
-			err := connector.Start()
-
-			if err != nil {
-				server.logger.Noticef("error restarting connector %s, will retry in %d milliseconds, %s", connector.String(), interval, err.Error())
-				continue
-			}
-
-			delete(server.reconnect, id)
-		}
-
-		if len(server.reconnect) > 0 {
-			server.ensureReconnectTimer()
-		}
 	}()
-}
-
-// locks the reconnect lock
-func (server *NATSReplicator) stopReconnectTimer() {
-	server.reconnectLock.Lock()
-	defer server.reconnectLock.Unlock()
-
-	if server.reconnectTimer != nil {
-		server.reconnectTimer.Cancel()
-	}
-
-	server.reconnectTimer = nil
 }

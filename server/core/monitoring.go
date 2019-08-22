@@ -140,7 +140,7 @@ func (server *NATSReplicator) startMonitoring() error {
 }
 
 // StopMonitoring shuts down the http server used for monitoring
-// expects the lock to be held
+// expects the server lock to be held
 func (server *NATSReplicator) StopMonitoring() error {
 	server.logger.Tracef("stopping monitoring")
 	if server.http != nil && server.httpHandler != nil {

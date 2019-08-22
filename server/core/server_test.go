@@ -106,6 +106,7 @@ func StartTestEnvironmentInfrastructure(useTLS bool) (*TestEnv, error) {
 // it is provided separately so that environment can be created before the bridge runs
 func (tbs *TestEnv) StartReplicator(connections []conf.ConnectorConfig) error {
 	config := conf.DefaultConfig()
+	config.ReconnectInterval = 200
 	config.Logging.Debug = true
 	config.Logging.Trace = true
 	config.Logging.Colors = false
@@ -131,6 +132,8 @@ func (tbs *TestEnv) StartReplicator(connections []conf.ConnectorConfig) error {
 		MaxPubAcksInflight: stan.DefaultMaxPubAcksInflight,
 		ConnectWait:        2000,
 		NATSConnection:     "nats",
+		PingInterval:       1,
+		MaxPings:           3,
 	})
 
 	if tbs.useTLS {
@@ -253,18 +256,22 @@ func (tbs *TestEnv) StopReplicator() {
 func (tbs *TestEnv) StopNATS() error {
 	if tbs.SC != nil {
 		tbs.SC.Close()
+		tbs.SC = nil
 	}
 
 	if tbs.NC != nil {
 		tbs.NC.Close()
+		tbs.NC = nil
 	}
 
 	if tbs.Stan != nil {
 		tbs.Stan.Shutdown()
+		tbs.Stan = nil
 	}
 
 	if tbs.Gnatsd != nil {
 		tbs.Gnatsd.Shutdown()
+		tbs.Gnatsd = nil
 	}
 
 	return nil

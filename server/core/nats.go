@@ -21,25 +21,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats-replicator/server/conf"
+
 	nats "github.com/nats-io/nats.go"
 	stan "github.com/nats-io/stan.go"
 )
 
 func (server *NATSReplicator) natsError(nc *nats.Conn, sub *nats.Subscription, err error) {
 	server.logger.Warnf("nats error %s", err.Error())
-}
-
-func (server *NATSReplicator) stanConnectionLost(sc stan.Conn, err error) {
-	if !server.checkRunning() {
-		return
-	}
-	server.logger.Warnf("nats streaming disconnected")
-
-	server.natsLock.Lock()
-	server.stan = nil // we lost stan
-	server.natsLock.Unlock()
-
-	server.checkConnections()
 }
 
 func (server *NATSReplicator) natsDisconnected(nc *nats.Conn) {
@@ -66,14 +55,9 @@ func (server *NATSReplicator) natsDiscoveredServers(nc *nats.Conn) {
 	server.logger.Debugf("known servers: %v\n", nc.Servers())
 }
 
-// assumes the lock is held by the caller
 func (server *NATSReplicator) connectToNATS() error {
 	server.natsLock.Lock()
 	defer server.natsLock.Unlock()
-
-	if !server.running {
-		return nil // already stopped
-	}
 
 	for _, config := range server.config.NATS {
 		name := config.Name
@@ -138,7 +122,7 @@ func (server *NATSReplicator) connectToNATS() error {
 	return nil
 }
 
-// assumes the lock is held by the caller
+// assumes the server lock is held by the caller
 func (server *NATSReplicator) connectToSTAN() error {
 	server.natsLock.Lock()
 	defer server.natsLock.Unlock()
@@ -182,12 +166,37 @@ func (server *NATSReplicator) connectToSTAN() error {
 			pubAckWait = time.Duration(config.ConnectWait) * time.Millisecond
 		}
 
+		maxPings := stan.DefaultPingMaxOut
+
+		if config.MaxPings > 0 {
+			maxPings = config.MaxPings
+		}
+
+		pingInterval := stan.DefaultPingInterval
+
+		if config.PingInterval > 0 {
+			pingInterval = config.PingInterval
+		}
+
 		sc, err := stan.Connect(config.ClusterID, config.ClientID,
 			stan.NatsConn(nc),
 			stan.PubAckWait(pubAckWait),
 			stan.MaxPubAcksInflight(maxPubInFlight),
 			stan.ConnectWait(connectWait),
-			stan.SetConnectionLostHandler(server.stanConnectionLost),
+			stan.Pings(pingInterval, maxPings),
+			stan.SetConnectionLostHandler(func(sc stan.Conn, err error) {
+				if !server.checkRunning() {
+					return
+				}
+				server.logger.Warnf("nats streaming %s disconnected", name)
+
+				server.natsLock.Lock()
+				sc.Close()
+				delete(server.stan, name)
+				server.natsLock.Unlock()
+
+				server.checkConnections()
+			}),
 			func(o *stan.Options) error {
 				if config.DiscoverPrefix != "" {
 					o.DiscoverPrefix = config.DiscoverPrefix
@@ -205,4 +214,73 @@ func (server *NATSReplicator) connectToSTAN() error {
 	}
 
 	return nil
+}
+
+// NATS hosts a shared nats connection for the connectors
+func (server *NATSReplicator) NATS(name string) *nats.Conn {
+	server.natsLock.RLock()
+	nc, ok := server.nats[name]
+	server.natsLock.RUnlock()
+	if !ok {
+		nc = nil
+	}
+	return nc
+}
+
+// Stan hosts a shared streaming connection for the connectors
+func (server *NATSReplicator) Stan(name string) stan.Conn {
+	server.natsLock.RLock()
+	sc, ok := server.stan[name]
+	server.natsLock.RUnlock()
+
+	if !ok {
+		sc = nil
+	}
+	return sc
+}
+
+// CheckNATS returns true if the bridge is connected to nats
+func (server *NATSReplicator) CheckNATS(name string) bool {
+	server.natsLock.RLock()
+	defer server.natsLock.RUnlock()
+
+	nc, ok := server.nats[name]
+
+	if ok && nc != nil {
+		return nc.ConnectedUrl() != ""
+	}
+
+	return false
+}
+
+// CheckStan returns true if the bridge is connected to stan
+func (server *NATSReplicator) CheckStan(name string) bool {
+	server.natsLock.RLock()
+	defer server.natsLock.RUnlock()
+
+	var stanConfig conf.NATSStreamingConfig
+	ok := false
+
+	for _, c := range server.config.STAN {
+		if c.Name == name {
+			stanConfig = c
+			ok = true
+			break
+		}
+	}
+
+	if !ok {
+		return false
+	}
+
+	natsName := stanConfig.NATSConnection
+	nc, ok := server.nats[natsName]
+
+	if !ok || nc == nil || nc.ConnectedUrl() == "" {
+		return false
+	}
+
+	sc, ok := server.stan[name]
+
+	return ok && sc != nil
 }

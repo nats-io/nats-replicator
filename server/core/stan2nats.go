@@ -150,7 +150,7 @@ func (conn *Stan2NATSConnector) Shutdown() error {
 
 	if sub != nil {
 		if err := sub.Close(); err != nil {
-			conn.bridge.Logger().Noticef("error unsubscribing for %s, %s", conn.String(), err.Error())
+			conn.bridge.Logger().Noticef("error closing for %s, %s", conn.String(), err.Error())
 		}
 	}
 
