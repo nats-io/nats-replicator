@@ -47,6 +47,7 @@ var showProgress bool
 var in string
 var out string
 var pubFirst bool
+var repRequired bool
 
 func startReplicator(connections []conf.ConnectorConfig) (*core.NATSReplicator, error) {
 	config := conf.DefaultConfig()
@@ -114,7 +115,8 @@ func main() {
 	flag.StringVar(&stanClusterID, "stan", "test-cluster", "stan cluster id")
 	flag.StringVar(&natsURL2, "nats2", "", "nats url for the subscriber side, defaults to nats://localhost:4222")
 	flag.StringVar(&stanClusterID2, "stan2", "", "stan cluster id for the subscriber side, defaults to test-cluster")
-	flag.BoolVar(&direct, "direct", false, "skip the replicator and just")
+	flag.BoolVar(&direct, "direct", false, "skip the replicator and just use streaming")
+	flag.BoolVar(&repRequired, "rep", false, "force a replicator in pub/sub mode")
 	flag.BoolVar(&pubFirst, "pubFirst", false, "pre-run the publiser, then start the replicator and/or subscriber")
 	flag.BoolVar(&pubOnly, "pub", false, "only publish, don't subscribe, useful for testing send times across a long connection")
 	flag.BoolVar(&subOnly, "sub", false, "only time the reads, useful for testing read times across a long connection, timer starts with first receive")
@@ -160,9 +162,9 @@ func main() {
 		outgoing = out
 	}
 
-	if pubOnly || subOnly {
+	if (pubOnly || subOnly) && !repRequired {
 		direct = true
-		log.Printf("Pub and sub only mode always run with direct mode, no replicator is used")
+		log.Printf("Pub and sub only mode default to run with direct mode, no replicator is used, use -rep to force a replicator")
 	}
 
 	if direct {
