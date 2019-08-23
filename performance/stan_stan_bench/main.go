@@ -295,7 +295,7 @@ func main() {
 
 					curInterval := reqcount / int64(interval)
 
-					if curInterval > lastRepInterval {
+					if curInterval > lastRepInterval && showProgress {
 						lastRepInterval = curInterval
 						log.Printf("replicated count = %d", reqcount)
 					}
