@@ -46,6 +46,7 @@ var hideReplicatorLog bool
 var showProgress bool
 var in string
 var out string
+var pubFirst bool
 
 func startReplicator(connections []conf.ConnectorConfig) (*core.NATSReplicator, error) {
 	config := conf.DefaultConfig()
@@ -114,6 +115,7 @@ func main() {
 	flag.StringVar(&natsURL2, "nats2", "", "nats url for the subscriber side, defaults to nats://localhost:4222")
 	flag.StringVar(&stanClusterID2, "stan2", "", "stan cluster id for the subscriber side, defaults to test-cluster")
 	flag.BoolVar(&direct, "direct", false, "skip the replicator and just")
+	flag.BoolVar(&pubFirst, "pubFirst", false, "pre-run the publiser, then start the replicator and/or subscriber")
 	flag.BoolVar(&pubOnly, "pub", false, "only publish, don't subscribe, useful for testing send times across a long connection")
 	flag.BoolVar(&subOnly, "sub", false, "only time the reads, useful for testing read times across a long connection, timer starts with first receive")
 	flag.BoolVar(&showStats, "stats", false, "print replicator stats, if not direct")
@@ -124,13 +126,23 @@ func main() {
 	flag.Parse()
 
 	var replicator *core.NATSReplicator
+	var startPub time.Time
+	var endPub time.Time
+	var startSub time.Time
+	var endSub time.Time
+	var startRep time.Time
+	var endRep time.Time
 
 	incoming := nuid.Next()
 	outgoing := nuid.Next()
 	msgString := strings.Repeat("a", messageSize)
 	msg := []byte(msgString)
 	msgLen := len(msg)
-	wg := sync.WaitGroup{}
+	pubwg := sync.WaitGroup{}
+	repwg := sync.WaitGroup{}
+	subwg := sync.WaitGroup{}
+	interval := int(iterations / 10)
+	repTimeout := make(chan bool, 1)
 
 	if natsURL2 == "" {
 		natsURL2 = natsURL
@@ -153,34 +165,15 @@ func main() {
 		log.Printf("Pub and sub only mode always run with direct mode, no replicator is used")
 	}
 
-	if !direct {
-		connect := []conf.ConnectorConfig{
-			{
-				Type:               "StanToStan",
-				IncomingConnection: "stan",
-				OutgoingConnection: "stan2",
-				IncomingChannel:    incoming,
-				OutgoingChannel:    outgoing,
-			},
-		}
-
-		var err error
-		replicator, err = startReplicator(connect)
-		if err != nil {
-			log.Fatalf("error starting replicator, %s", err.Error())
-		}
-	} else {
+	if direct {
 		log.Printf("Direct mode uses the same nats url and stan cluster id for both connections")
 		if in == "" && out == "" {
+			log.Printf("Unless custom channels are set, the same channel is used for read/write in direct mode")
 			outgoing = incoming
 		}
 		stanClusterID2 = stanClusterID
 		natsURL2 = natsURL
 	}
-
-	done := make(chan bool, 1)
-	count := 0
-	interval := int(iterations / 10)
 
 	nc, err := nats.Connect(natsURL, nats.Timeout(time.Second*5), nats.MaxReconnects(5), nats.ReconnectWait(time.Second*5))
 	if err != nil {
@@ -206,78 +199,145 @@ func main() {
 
 	log.Printf("Incoming/Replicated channel %s : Outgoing/Subscribed channel: %s", incoming, outgoing)
 
-	var start time.Time
+	if pubFirst || pubOnly {
+		log.Printf("Sending %d messages of size %d bytes...", iterations, messageSize)
+		pubwg.Add(iterations)
+		pubCount := 0
+		startPub = time.Now()
+		for i := 0; i < iterations; i++ {
+			_, err := sc.PublishAsync(incoming, msg, func(aguid string, err error) {
+				pubCount++
+				if err != nil {
+					log.Fatalf("error in ack handler, %s", err.Error())
+				}
+				if (pubCount%interval == 0 || pubCount == iterations) && showProgress {
+					log.Printf("async send count = %d", pubCount)
+				}
+				pubwg.Done()
+			})
+
+			if err != nil {
+				log.Fatalf("error publishing message, %s", err.Error())
+			}
+		}
+		pubwg.Wait()
+		endPub = time.Now()
+	}
 
 	if !pubOnly {
-		sc2.Subscribe(outgoing, func(msg *stan.Msg) {
-			if subOnly && count == 0 {
-				start = time.Now()
+		subwg.Add(iterations)
+		subCount := 0
+		_, err := sc2.Subscribe(outgoing, func(msg *stan.Msg) {
+			if subCount == 0 {
+				startSub = time.Now() // start timing on the first message
 			}
-			count++
-			if count%interval == 0 && showProgress {
-				log.Printf("received count = %d", count)
+			subCount++
+			if (subCount%interval == 0 || subCount == iterations) && showProgress {
+				log.Printf("received count = %d", subCount)
 			}
 
 			if len(msg.Data) != msgLen {
 				log.Fatalf("received message that is the wrong size %d != %d", len(msg.Data), msgLen)
 			}
 
-			if count == iterations {
-				done <- true
+			if subCount <= iterations {
+				subwg.Done()
 			}
-		})
-	} else {
-		done <- true
-	}
-
-	log.Printf("Sending %d messages of size %d bytes...", iterations, messageSize)
-
-	wg.Add(iterations)
-
-	start = time.Now()
-	for i := 0; i < iterations; i++ {
-		_, err := sc.PublishAsync(incoming, msg, func(aguid string, err error) {
-			if err != nil {
-				log.Fatalf("error in ack handler, %s", err.Error())
-			}
-			wg.Done()
-		})
+		}, stan.DeliverAllAvailable())
 
 		if err != nil {
-			log.Fatalf("error publishing message, %s", err.Error())
-		}
-
-		if i%interval == 0 && i != 0 && showProgress {
-			log.Printf("async send count = %d", i)
+			log.Fatalf("error subscribing to %s, %s", outgoing, err.Error())
 		}
 	}
-	wg.Wait()
-	<-done
-	end := time.Now()
 
-	if replicator != nil {
-		log.Printf("Trying to wait for acks to return to replicator before we shut it down")
-		timeout := time.Duration(5000) * time.Millisecond // 5 second timeout
-		stop := time.Now().Add(timeout)
-		requestsOk := make(chan bool)
+	if !direct {
+		connect := []conf.ConnectorConfig{
+			{
+				Type:                    "StanToStan",
+				IncomingConnection:      "stan",
+				OutgoingConnection:      "stan2",
+				IncomingChannel:         incoming,
+				OutgoingChannel:         outgoing,
+				IncomingStartAtSequence: 0,
+			},
+		}
 
-		ticker := time.NewTicker(50 * time.Millisecond)
+		var err error
+		replicator, err = startReplicator(connect)
+		if err != nil {
+			log.Fatalf("error starting replicator, %s", err.Error())
+		}
+
+		// Start trying to capture the replicator ack activity
+		repwg.Add(1)
 		go func() {
+			repTicker := time.NewTicker(100 * time.Millisecond)
+		loop:
+			for {
+				select {
+				case t := <-repTicker.C:
+					reqcount := replicator.SafeStats().RequestCount
+					if reqcount >= 0 && startRep.IsZero() {
+						startRep = t
+					}
+					if reqcount >= int64(iterations) {
+						endRep = t
+						break loop
+					}
+				case <-repTimeout:
+					break loop
+				}
+			}
+			repwg.Done()
+			repTicker.Stop()
+		}()
+	}
+
+	if !pubFirst && !pubOnly {
+		log.Printf("Sending %d messages of size %d bytes...", iterations, messageSize)
+		pubwg.Add(iterations)
+		pubCount := 0
+		startPub = time.Now()
+		for i := 0; i < iterations; i++ {
+			_, err := sc.PublishAsync(incoming, msg, func(aguid string, err error) {
+				pubCount++
+				if err != nil {
+					log.Fatalf("error in ack handler, %s", err.Error())
+				}
+				if (pubCount%interval == 0 || pubCount == iterations) && showProgress {
+					log.Printf("async send count = %d", pubCount)
+				}
+				pubwg.Done()
+			})
+
+			if err != nil {
+				log.Fatalf("error publishing message, %s", err.Error())
+			}
+		}
+		pubwg.Wait()
+		endPub = time.Now()
+	}
+
+	if !pubOnly {
+		subwg.Wait()
+		endSub = time.Now()
+	}
+
+	if !direct {
+		log.Printf("Waiting for acks to return to replicator before we shut it down")
+		go func() {
+			stop := time.Now().Add(10 * time.Second)
+			ticker := time.NewTicker(500 * time.Millisecond)
 			for t := range ticker.C {
 				if t.After(stop) {
-					requestsOk <- false
-					break
-				}
-
-				if replicator.SafeStats().RequestCount >= int64(iterations) {
-					requestsOk <- true
+					repTimeout <- true
 					break
 				}
 			}
 			ticker.Stop()
 		}()
 
-		<-requestsOk
+		repwg.Wait()
 
 		stats := replicator.SafeStats()
 		statsJSON, _ := json.MarshalIndent(stats, "", "    ")
@@ -294,18 +354,53 @@ func main() {
 	nc2.Close()
 	nc.Close()
 
-	diff := end.Sub(start)
-	rate := float64(iterations) / float64(diff.Seconds())
-	sizeRate := float64(messageSize) * rate / (1024 * 1024)
+	if !direct && endRep.IsZero() {
+		log.Printf("Test Failed, replicator did not receive all of the acks within the timeout")
+		return
+	}
+
+	var totalDiff time.Duration
 
 	if pubOnly {
-		log.Printf("Sent %d messages to a streaming channel %s", iterations, diff)
+		totalDiff = endPub.Sub(startPub)
+		log.Printf("Sent %d messages to a streaming channel %s", iterations, totalDiff)
 	} else if subOnly {
-		log.Printf("Read %d messages from a streaming channel in %s", iterations, diff)
+		totalDiff = endSub.Sub(startSub)
+		log.Printf("Read %d messages from a streaming channel in %s", iterations, totalDiff)
 	} else if direct {
-		log.Printf("Sent %d messages through a streaming channel to a streaming subscriber in %s", iterations, diff)
+		totalDiff = endSub.Sub(startPub)
+		log.Printf("Sent %d messages through a streaming channel to a streaming subscriber in %s", iterations, totalDiff)
+		log.Printf("Total messages moved were %d", 2*iterations)
 	} else {
-		log.Printf("Sent %d messages through a channel to the replicator and read from another channel in %s", iterations, diff)
+		totalDiff = endSub.Sub(startPub)
+		log.Printf("Sent %d messages through a channel to the replicator and read from another channel in %s", iterations, totalDiff)
+		log.Printf("Total messages moved were %d", 4*iterations)
 	}
-	log.Printf("%.2f msgs/sec ~ %.2f MB/sec", rate, sizeRate)
+
+	if pubFirst {
+		log.Printf("Messages were pushed to streaming before a replicator or subscriber was created")
+	}
+
+	totalRate := float64(iterations) / float64(totalDiff.Seconds())
+	totalSizeRate := float64(messageSize) * totalRate / (1024 * 1024)
+	log.Printf("Total stats - %.2f msgs/sec ~ %.2f MB/sec (using %d full paths)", totalRate, totalSizeRate, iterations)
+
+	pubDiff := endPub.Sub(startPub)
+	pubRate := float64(iterations) / float64(pubDiff.Seconds())
+	pubSizeRate := float64(messageSize) * pubRate / (1024 * 1024)
+	log.Printf("  Pub stats - %.2f msgs/sec ~ %.2f MB/sec", pubRate, pubSizeRate)
+
+	if !pubOnly {
+		subDiff := endSub.Sub(startSub)
+		subRate := float64(iterations) / float64(subDiff.Seconds())
+		subSizeRate := float64(messageSize) * subRate / (1024 * 1024)
+		log.Printf("  Sub stats - %.2f msgs/sec ~ %.2f MB/sec", subRate, subSizeRate)
+	}
+
+	if !direct {
+		repDiff := endRep.Sub(startRep)
+		repRate := float64(iterations) / float64(repDiff.Seconds())
+		repSizeRate := float64(messageSize) * repRate / (1024 * 1024)
+		log.Printf("  Rep stats - %.2f msgs/sec ~ %.2f MB/sec", repRate, repSizeRate)
+	}
 }
