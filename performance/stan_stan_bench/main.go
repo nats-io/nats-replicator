@@ -278,6 +278,7 @@ func main() {
 		// Start trying to capture the replicator ack activity
 		repwg.Add(1)
 		go func() {
+			lastRepInterval := int64(0)
 			repTicker := time.NewTicker(100 * time.Millisecond)
 		loop:
 			for {
@@ -290,6 +291,13 @@ func main() {
 					if reqcount >= int64(iterations) {
 						endRep = t
 						break loop
+					}
+
+					curInterval := reqcount / int64(interval)
+
+					if curInterval > lastRepInterval {
+						lastRepInterval = curInterval
+						log.Printf("replicated count = %d", reqcount)
 					}
 				case <-repTimeout:
 					break loop
