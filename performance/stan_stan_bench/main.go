@@ -295,7 +295,7 @@ func main() {
 		}()
 	}
 
-	if !pubFirst && !pubOnly {
+	if !pubFirst && !pubOnly && !subOnly {
 		log.Printf("Sending %d messages of size %d bytes...", iterations, messageSize)
 		pubwg.Add(iterations)
 		pubCount := 0
