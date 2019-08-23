@@ -331,18 +331,23 @@ func main() {
 	}
 
 	if !direct {
-		log.Printf("Waiting for acks to return to replicator before we shut it down")
-		go func() {
-			stop := time.Now().Add(10 * time.Second)
-			ticker := time.NewTicker(500 * time.Millisecond)
-			for t := range ticker.C {
-				if t.After(stop) {
-					repTimeout <- true
-					break
+
+		if !repOnly {
+			log.Printf("Waiting for acks to return to replicator before we shut it down, timeout of %d seconds", 10)
+			go func() {
+				stop := time.Now().Add(10 * time.Second)
+				ticker := time.NewTicker(500 * time.Millisecond)
+				for t := range ticker.C {
+					if t.After(stop) {
+						repTimeout <- true
+						break
+					}
 				}
-			}
-			ticker.Stop()
-		}()
+				ticker.Stop()
+			}()
+		} else {
+			log.Printf("Waiting for acks to replicator without timeout")
+		}
 
 		repwg.Wait()
 
