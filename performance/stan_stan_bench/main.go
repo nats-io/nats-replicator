@@ -41,13 +41,13 @@ var maxPubAcks int
 var direct bool
 var pubOnly bool
 var subOnly bool
+var repOnly bool
 var showStats bool
 var hideReplicatorLog bool
 var showProgress bool
 var in string
 var out string
 var pubFirst bool
-var repRequired bool
 
 func startReplicator(connections []conf.ConnectorConfig) (*core.NATSReplicator, error) {
 	config := conf.DefaultConfig()
@@ -116,7 +116,7 @@ func main() {
 	flag.StringVar(&natsURL2, "nats2", "", "nats url for the subscriber side, defaults to nats://localhost:4222")
 	flag.StringVar(&stanClusterID2, "stan2", "", "stan cluster id for the subscriber side, defaults to test-cluster")
 	flag.BoolVar(&direct, "direct", false, "skip the replicator and just use streaming")
-	flag.BoolVar(&repRequired, "rep", false, "force a replicator in pub/sub mode")
+	flag.BoolVar(&repOnly, "rep", false, "only run the replicator")
 	flag.BoolVar(&pubFirst, "pubFirst", false, "pre-run the publiser, then start the replicator and/or subscriber")
 	flag.BoolVar(&pubOnly, "pub", false, "only publish, don't subscribe, useful for testing send times across a long connection")
 	flag.BoolVar(&subOnly, "sub", false, "only time the reads, useful for testing read times across a long connection, timer starts with first receive")
@@ -162,9 +162,14 @@ func main() {
 		outgoing = out
 	}
 
-	if (pubOnly || subOnly) && !repRequired {
+	if pubOnly || subOnly {
 		direct = true
-		log.Printf("Pub and sub only mode default to run with direct mode, no replicator is used, use -rep to force a replicator")
+		log.Printf("Pub and sub only mode runs with direct mode, no replicator is used")
+	}
+
+	if repOnly {
+		direct = false
+		log.Printf("Replicator only mode sets direct mode to false")
 	}
 
 	if direct {
@@ -226,7 +231,7 @@ func main() {
 		endPub = time.Now()
 	}
 
-	if !pubOnly {
+	if !pubOnly && !repOnly {
 		subwg.Add(iterations)
 		subCount := 0
 		_, err := sc2.Subscribe(outgoing, func(msg *stan.Msg) {
@@ -295,7 +300,7 @@ func main() {
 		}()
 	}
 
-	if !pubFirst && !pubOnly && !subOnly {
+	if !pubFirst && !pubOnly && !subOnly && !repOnly {
 		log.Printf("Sending %d messages of size %d bytes...", iterations, messageSize)
 		pubwg.Add(iterations)
 		pubCount := 0
@@ -320,7 +325,7 @@ func main() {
 		endPub = time.Now()
 	}
 
-	if !pubOnly {
+	if !pubOnly && !repOnly {
 		subwg.Wait()
 		endSub = time.Now()
 	}
@@ -373,6 +378,10 @@ func main() {
 		totalDiff = endSub.Sub(startPub)
 		log.Printf("Sent %d messages through a streaming channel to a streaming subscriber in %s", iterations, totalDiff)
 		log.Printf("Total messages moved were %d", 2*iterations)
+	} else if repOnly {
+		totalDiff = endRep.Sub(startRep)
+		log.Printf("Replicated %d messages %s", iterations, totalDiff)
+		log.Printf("Total messages moved were %d", 2*iterations)
 	} else {
 		totalDiff = endSub.Sub(startPub)
 		log.Printf("Sent %d messages through a channel to the replicator and read from another channel in %s", iterations, totalDiff)
@@ -387,12 +396,14 @@ func main() {
 	totalSizeRate := float64(messageSize) * totalRate / (1024 * 1024)
 	log.Printf("Total stats - %.2f msgs/sec ~ %.2f MB/sec (using %d full paths)", totalRate, totalSizeRate, iterations)
 
-	pubDiff := endPub.Sub(startPub)
-	pubRate := float64(iterations) / float64(pubDiff.Seconds())
-	pubSizeRate := float64(messageSize) * pubRate / (1024 * 1024)
-	log.Printf("  Pub stats - %.2f msgs/sec ~ %.2f MB/sec", pubRate, pubSizeRate)
+	if !repOnly {
+		pubDiff := endPub.Sub(startPub)
+		pubRate := float64(iterations) / float64(pubDiff.Seconds())
+		pubSizeRate := float64(messageSize) * pubRate / (1024 * 1024)
+		log.Printf("  Pub stats - %.2f msgs/sec ~ %.2f MB/sec", pubRate, pubSizeRate)
+	}
 
-	if !pubOnly {
+	if !pubOnly && !repOnly {
 		subDiff := endSub.Sub(startSub)
 		subRate := float64(iterations) / float64(subDiff.Seconds())
 		subSizeRate := float64(messageSize) * subRate / (1024 * 1024)
