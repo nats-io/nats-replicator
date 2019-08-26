@@ -80,6 +80,11 @@ func (conn *Stan2NATSConnector) Start() error {
 	options = append(options, stan.SetManualAckMode())
 	traceEnabled := conn.bridge.Logger().TraceEnabled()
 
+	onc := conn.bridge.NATS(outgoing)
+	if onc == nil {
+		return fmt.Errorf("%s connector requires nats connection named %s to be available", conn.String(), outgoing)
+	}
+
 	callback := func(msg *stan.Msg) {
 		start := time.Now()
 		l := int64(len(msg.Data))
@@ -88,15 +93,7 @@ func (conn *Stan2NATSConnector) Start() error {
 			conn.bridge.Logger().Tracef("%s received message", conn.String())
 		}
 
-		// send to nats here
-		nc := conn.bridge.NATS(outgoing)
-
-		if nc == nil {
-			conn.bridge.ConnectorError(conn, fmt.Errorf("%s connector requires nats connection named %s to be available", conn.String(), outgoing))
-			return
-		}
-
-		err := nc.Publish(config.OutgoingSubject, msg.Data)
+		err := onc.Publish(config.OutgoingSubject, msg.Data)
 
 		if err != nil {
 			conn.stats.AddMessageIn(l)

@@ -60,19 +60,17 @@ func (conn *NATS2StanConnector) Start() error {
 
 	conn.bridge.Logger().Tracef("starting connection %s", conn.String())
 
+	osc := conn.bridge.Stan(outgoing)
+	if osc == nil {
+		return fmt.Errorf("%s connector requires stan connection named %s to be available", conn.String(), outgoing)
+	}
+
 	traceEnabled := conn.bridge.Logger().TraceEnabled()
 	callback := func(msg *nats.Msg) {
 		start := time.Now()
 		l := int64(len(msg.Data))
 
-		sc := conn.bridge.Stan(outgoing)
-
-		if sc == nil {
-			conn.bridge.ConnectorError(conn, fmt.Errorf("%s connector requires stan connection named %s to be available", conn.String(), outgoing))
-			return
-		}
-
-		_, err := sc.PublishAsync(config.OutgoingChannel, msg.Data, func(ackguid string, err error) {
+		_, err := osc.PublishAsync(config.OutgoingChannel, msg.Data, func(ackguid string, err error) {
 			// Handle the error on the ack handler after we cleaned up the outstanding acks map
 			if err != nil {
 				conn.stats.AddMessageIn(l)
