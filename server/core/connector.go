@@ -19,9 +19,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats-replicator/server/conf"
 	"github.com/nats-io/nuid"
+	stan "github.com/nats-io/stan.go"
 )
 
 // Connector is the abstraction for all of the bridge connector types
@@ -107,4 +109,36 @@ func (conn *ReplicatorConnector) init(bridge *NATSReplicator, config conf.Connec
 		id = nuid.Next()
 	}
 	conn.stats = NewConnectorStatsHolder(name, id)
+}
+
+func createSubscriberOptions(config conf.ConnectorConfig) []stan.SubscriptionOption {
+
+	options := []stan.SubscriptionOption{}
+
+	if config.IncomingDurableName != "" {
+		options = append(options, stan.DurableName(config.IncomingDurableName))
+	}
+
+	if config.IncomingStartAtTime != 0 {
+		t := time.Unix(config.IncomingStartAtTime, 0)
+		options = append(options, stan.StartAtTime(t))
+	} else if config.IncomingStartAtSequence == -1 {
+		options = append(options, stan.StartWithLastReceived())
+	} else if config.IncomingStartAtSequence > 0 {
+		options = append(options, stan.StartAtSequence(uint64(config.IncomingStartAtSequence)))
+	} else {
+		options = append(options, stan.DeliverAllAvailable())
+	}
+
+	if config.IncomingMaxInflight != 0 {
+		options = append(options, stan.MaxInflight(int(config.IncomingMaxInflight)))
+	}
+
+	if config.IncomingAckWait != 0 {
+		options = append(options, stan.AckWait(time.Duration(config.IncomingAckWait)*time.Millisecond))
+	}
+
+	options = append(options, stan.SetManualAckMode())
+
+	return options
 }

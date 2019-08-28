@@ -59,24 +59,7 @@ func (conn *Stan2StanConnector) Start() error {
 
 	conn.bridge.Logger().Tracef("starting connection %s", conn.String())
 
-	options := []stan.SubscriptionOption{}
-
-	if config.IncomingDurableName != "" {
-		options = append(options, stan.DurableName(config.IncomingDurableName))
-	}
-
-	if config.IncomingStartAtTime != 0 {
-		t := time.Unix(config.IncomingStartAtTime, 0)
-		options = append(options, stan.StartAtTime(t))
-	} else if config.IncomingStartAtSequence == -1 {
-		options = append(options, stan.StartWithLastReceived())
-	} else if config.IncomingStartAtSequence > 0 {
-		options = append(options, stan.StartAtSequence(uint64(config.IncomingStartAtSequence)))
-	} else {
-		options = append(options, stan.DeliverAllAvailable())
-	}
-
-	options = append(options, stan.SetManualAckMode())
+	options := createSubscriberOptions(config)
 	traceEnabled := conn.bridge.Logger().TraceEnabled()
 
 	osc := conn.bridge.Stan(outgoing)

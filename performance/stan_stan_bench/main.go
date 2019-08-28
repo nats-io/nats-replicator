@@ -38,6 +38,7 @@ var stanClusterID string
 var natsURL2 string
 var stanClusterID2 string
 var maxPubAcks int
+var maxOut int
 var direct bool
 var pubOnly bool
 var subOnly bool
@@ -111,6 +112,7 @@ func main() {
 	flag.IntVar(&iterations, "n", 1000, "messages to send, defaults to 1000")
 	flag.IntVar(&messageSize, "ms", 1024, "message size, defaults to 1024")
 	flag.IntVar(&maxPubAcks, "mpa", 1, "maximum pub acks, defaults to 1")
+	flag.IntVar(&maxOut, "maxout", 100, "maximum message out on the subscriber side, defaults to 1000")
 	flag.StringVar(&natsURL, "nats", "nats://localhost:4222", "nats url, defaults to nats://localhost:4222")
 	flag.StringVar(&stanClusterID, "stan", "test-cluster", "stan cluster id")
 	flag.StringVar(&natsURL2, "nats2", "", "nats url for the subscriber side, defaults to nats://localhost:4222")
@@ -250,7 +252,7 @@ func main() {
 			if subCount <= iterations {
 				subwg.Done()
 			}
-		}, stan.DeliverAllAvailable())
+		}, stan.DeliverAllAvailable(), stan.MaxInflight(maxOut))
 
 		if err != nil {
 			log.Fatalf("error subscribing to %s, %s", outgoing, err.Error())
@@ -266,6 +268,7 @@ func main() {
 				IncomingChannel:         incoming,
 				OutgoingChannel:         outgoing,
 				IncomingStartAtSequence: 0,
+				IncomingMaxInflight:     int64(maxOut),
 			},
 		}
 

@@ -168,6 +168,8 @@ type ConnectorConfig struct {
 	IncomingDurableName     string `conf:"incoming_durable_name"`     // Optional, used for stan connections
 	IncomingStartAtSequence int64  `conf:"incoming_startat_sequence"` // Start position for stan connection, -1 means StartWithLastReceived, 0 means DeliverAllAvailable (default)
 	IncomingStartAtTime     int64  `conf:"incoming_startat_time"`     // Start time, as Unix, time takes precedence over sequence
+	IncomingMaxInflight     int64  `conf:"incoming_max_in_flight"`    // maximum message in flight to this connector's subscription in Streaming
+	IncomingAckWait         int64  `conf:"incoming_ack_wait"`         // max wait time in Milliseconds for the incoming subscription
 
 	IncomingSubject   string `conf:"incoming_subject"`    // Used for nats connections
 	IncomingQueueName string `conf:"incoming_queue_name"` // Optional, used for nats connections
