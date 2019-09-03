@@ -30,7 +30,7 @@ import (
 	stan "github.com/nats-io/stan.go"
 )
 
-var version = "0.0-dev"
+const version = "0.1.0"
 
 // NATSReplicator is the core structure for the server.
 type NATSReplicator struct {
