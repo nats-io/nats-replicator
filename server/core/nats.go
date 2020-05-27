@@ -107,6 +107,10 @@ func (server *NATSReplicator) connectToNATS() error {
 			options = append(options, nats.UserCredentials(config.UserCredentials))
 		}
 
+		if config.ClientName != "" {
+			options = append(options, nats.Name(config.ClientName))
+		}
+
 		nc, err := nats.Connect(strings.Join(config.Servers, ","),
 			options...,
 		)

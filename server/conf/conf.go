@@ -117,6 +117,8 @@ type NATSConfig struct {
 
 	TLS             TLSConf
 	UserCredentials string `conf:"user_credentials"`
+
+	ClientName string `conf:"client_name"`
 }
 
 // NATSStreamingConfig configuration for a STAN connection
