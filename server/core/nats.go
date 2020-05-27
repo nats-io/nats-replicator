@@ -29,11 +29,15 @@ func (server *NATSReplicator) natsError(nc *nats.Conn, sub *nats.Subscription, e
 	server.logger.Warnf("nats error %s", err.Error())
 }
 
-func (server *NATSReplicator) natsDisconnected(nc *nats.Conn) {
+func (server *NATSReplicator) natsDisconnectErrHandler(nc *nats.Conn, err error) {
 	if !server.checkRunning() {
 		return
 	}
-	server.logger.Warnf("nats disconnected")
+	if err != nil {
+		server.logger.Warnf("%s NATS client connection got disconnected: %s", nc.Opts.Name, err)
+	} else {
+		server.logger.Warnf("%s NATS client connection got disconnected", nc.Opts.Name)
+	}
 	server.checkConnections()
 }
 
@@ -82,7 +86,7 @@ func (server *NATSReplicator) connectToNATS() error {
 			nats.Timeout(connectTimeout),
 			nats.ErrorHandler(server.natsError),
 			nats.DiscoveredServersHandler(server.natsDiscoveredServers),
-			nats.DisconnectHandler(server.natsDisconnected),
+			nats.DisconnectErrHandler(server.natsDisconnectErrHandler),
 			nats.ReconnectHandler(server.natsReconnected),
 			nats.ClosedHandler(server.natsClosed),
 		}
