@@ -331,6 +331,7 @@ type SQLMsgStore struct {
 	channelID   int64
 	sqlStore    *SQLStore // Reference to "parent" store
 	expireTimer *time.Timer
+	fTimestamp  int64
 	wg          sync.WaitGroup
 
 	// If option NoBuffering is false, uses this cache for storing Store()
@@ -383,7 +384,11 @@ var sqlSeqArrayPool = &sync.Pool{
 // DefaultStoreLimits.
 func NewSQLStore(log logger.Logger, driver, source string, limits *StoreLimits, options ...SQLStoreOption) (*SQLStore, error) {
 	initSQLStmts.Do(func() { initSQLStmtsTable(driver) })
-	db, err := sql.Open(driver, source)
+	realDriver := driver
+	if driver == driverPostgres {
+		realDriver = "pq-deadlines"
+	}
+	db, err := sql.Open(realDriver, source)
 	if err != nil {
 		return nil, err
 	}
@@ -460,13 +465,26 @@ func (s *SQLStore) GetExclusiveLock() (bool, error) {
 		for i := 0; i < sqlLockLostCount; i++ {
 			time.Sleep(time.Duration(1.5 * float64(sqlLockUpdateInterval)))
 			hasLock, id, tick, err = s.acquireDBLock(false)
-			if hasLock || err != nil || id != prevID || tick != prevTick {
-				return hasLock, err
+			// If the current lock owner is closed, the lockID is being
+			// cleaned from the entry in the table, which could allow the
+			// call above to acquired the lock even though the "steal"
+			// boolean is false. If we got the lock, ensure we start the
+			// "tick" update process.
+			if hasLock {
+				break
+			}
+			// If we got an error or ID and/or tick has changed, simply
+			// return that we don't have the lock.
+			if err != nil || id != prevID || tick != prevTick {
+				return false, err
 			}
 			prevTick = tick
 		}
-		// Try to steal.
-		hasLock, _, _, err = s.acquireDBLock(true)
+		if !hasLock {
+			// Still did not get the lock but there was no update to the
+			// lock table, so try to steal.
+			hasLock, _, _, err = s.acquireDBLock(true)
+		}
 	}
 	if hasLock {
 		// Success. Keep track that we own the lock so we can clear
@@ -486,7 +504,7 @@ func (s *SQLStore) updateDBLock() {
 
 	var (
 		ticker  = time.NewTicker(sqlLockUpdateInterval)
-		hasLock = true
+		hasLock bool
 		err     error
 		failed  int
 	)
@@ -686,8 +704,7 @@ func (s *SQLStore) createPreparedStmts() error {
 func initSQLStmtsTable(driver string) {
 	// The sqlStmts table is initialized with MySQL statements.
 	// Update the statements for the selected driver.
-	switch driver {
-	case driverPostgres:
+	if driver == driverPostgres {
 		// Replace ? with $1, $2, etc...
 		for i, stmt := range sqlStmts {
 			n := 0
@@ -1390,8 +1407,9 @@ func (ms *SQLMsgStore) Store(m *pb.MsgProto) (uint64, error) {
 			return 0, sqlStmtError(sqlStoreMsg, err)
 		}
 	}
-	if ms.first == 0 {
+	if ms.first == 0 || ms.first == seq {
 		ms.first = seq
+		ms.fTimestamp = m.Timestamp
 	}
 	ms.last = seq
 	ms.totalCount++
@@ -1444,7 +1462,7 @@ func (ms *SQLMsgStore) Store(m *pb.MsgProto) (uint64, error) {
 
 func (ms *SQLMsgStore) createExpireTimer() {
 	ms.wg.Add(1)
-	ms.expireTimer = time.AfterFunc(ms.limits.MaxAge, ms.expireMsgs)
+	ms.expireTimer = time.AfterFunc(ms.msgExpireIn(ms.fTimestamp), ms.expireMsgs)
 }
 
 // Lookup implements the MsgStore interface
@@ -1546,7 +1564,6 @@ func (ms *SQLMsgStore) expireMsgs() {
 		count     int
 		maxSeq    uint64
 		totalSize uint64
-		timestamp int64
 	)
 	processErr := func(errCode int, err error) {
 		ms.log.Errorf("Unable to perform expiration for channel %q: %v", ms.subject, sqlStmtError(errCode, err))
@@ -1578,24 +1595,24 @@ func (ms *SQLMsgStore) expireMsgs() {
 			ms.totalBytes -= totalSize
 		}
 		// Reset since we are in a loop
-		timestamp = 0
+		ms.fTimestamp = 0
 		// If there is any message left in the channel, find out what the expiration
 		// timer needs to be set to.
 		if ms.totalCount > 0 {
 			r = ms.sqlStore.preparedStmts[sqlGetFirstMsgTimestamp].QueryRow(ms.channelID, ms.first)
-			if err := r.Scan(&timestamp); err != nil {
+			if err := r.Scan(&ms.fTimestamp); err != nil {
 				processErr(sqlGetFirstMsgTimestamp, err)
 				return
 			}
 		}
 		// No message left or no message to expire. The timer will be recreated when
 		// a new message is added to the channel.
-		if timestamp == 0 {
-			ms.wg.Done()
+		if ms.fTimestamp == 0 {
 			ms.expireTimer = nil
+			ms.wg.Done()
 			return
 		}
-		elapsed := time.Duration(time.Now().UnixNano() - timestamp)
+		elapsed := time.Duration(time.Now().UnixNano() - ms.fTimestamp)
 		if elapsed < ms.limits.MaxAge {
 			ms.expireTimer.Reset(ms.limits.MaxAge - elapsed)
 			// Done with the for loop

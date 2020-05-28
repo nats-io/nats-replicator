@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -41,8 +42,16 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// Time to wait before starting closing clients when in LD mode.
-const lameDuckModeDefaultInitialDelay = int64(10 * time.Second)
+const (
+	// Time to wait before starting closing clients when in LD mode.
+	lameDuckModeDefaultInitialDelay = int64(10 * time.Second)
+
+	// Interval for the first PING for non client connections.
+	firstPingInterval = time.Second
+
+	// This is for the first ping for client connections.
+	firstClientPingInterval = 2 * time.Second
+)
 
 // Make this a variable so that we can change during tests
 var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
@@ -51,6 +60,7 @@ var lameDuckModeInitialDelay = int64(lameDuckModeDefaultInitialDelay)
 // to help them understand information about this server.
 type Info struct {
 	ID                string   `json:"server_id"`
+	Name              string   `json:"server_name"`
 	Version           string   `json:"version"`
 	Proto             int      `json:"proto"`
 	GitCommit         string   `json:"git_commit,omitempty"`
@@ -63,6 +73,7 @@ type Info struct {
 	MaxPayload        int32    `json:"max_payload"`
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
+	ClientIP          string   `json:"client_ip,omitempty"`
 	Nonce             string   `json:"nonce,omitempty"`
 	Cluster           string   `json:"cluster,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
@@ -77,6 +88,7 @@ type Info struct {
 	GatewayURL        string   `json:"gateway_url,omitempty"`         // Gateway URL on that server (sent by route's INFO)
 	GatewayCmd        byte     `json:"gateway_cmd,omitempty"`         // Command code for the receiving server to know what to do
 	GatewayCmdPayload []byte   `json:"gateway_cmd_payload,omitempty"` // Command payload when needed
+	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses new $GNR. prefix for mapped replies
 
 	// LeafNode Specific
 	LeafNodeURLs []string `json:"leafnode_urls,omitempty"` // LeafNode URLs that the server can reconnect to.
@@ -99,10 +111,13 @@ type Server struct {
 	gacc             *Account
 	sys              *internal
 	accounts         sync.Map
+	tmpAccounts      sync.Map // Temporarily stores accounts that are being built
 	activeAccounts   int32
 	accResolver      AccountResolver
 	clients          map[uint64]*client
 	routes           map[uint64]*client
+	routesByHash     sync.Map
+	hash             []byte
 	remotes          map[string]*client
 	leafs            map[uint64]*client
 	users            map[string]*User
@@ -113,6 +128,7 @@ type Server struct {
 	start            time.Time
 	http             net.Listener
 	httpHandler      http.Handler
+	httpBasePath     string
 	profiler         net.Listener
 	httpReqStats     map[string]uint64
 	routeListener    net.Listener
@@ -126,7 +142,8 @@ type Server struct {
 		dialTimeout time.Duration
 	}
 
-	quitCh chan struct{}
+	quitCh           chan struct{}
+	shutdownComplete chan struct{}
 
 	// Tracking Go routines
 	grMu         sync.Mutex
@@ -139,9 +156,10 @@ type Server struct {
 
 	logging struct {
 		sync.RWMutex
-		logger Logger
-		trace  int32
-		debug  int32
+		logger      Logger
+		trace       int32
+		debug       int32
+		traceSysAcc int32
 	}
 
 	clientConnectURLs []string
@@ -175,6 +193,18 @@ type Server struct {
 	// added/removed routes. The monitoring code then check that
 	// to know if it should update the cluster's URLs array.
 	varzUpdateRouteURLs bool
+
+	// Keeps a sublist of of subscriptions attached to leafnode connections
+	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
+	// gateway reply.
+	gwLeafSubs *Sublist
+
+	// Used for expiration of mapped GW replies
+	gwrm struct {
+		w  int32
+		ch chan time.Duration
+		m  sync.Map
+	}
 }
 
 // Make sure all are 64bits for atomic use
@@ -206,6 +236,13 @@ func NewServer(opts *Options) (*Server, error) {
 	kp, _ := nkeys.CreateServer()
 	pub, _ := kp.PublicKey()
 
+	serverName := pub
+	if opts.ServerName != "" {
+		serverName = opts.ServerName
+	}
+
+	httpBasePath := normalizeBasePath(opts.HTTPBasePath)
+
 	// Validate some options. This is here because we cannot assume that
 	// server will always be started with configuration parsing (that could
 	// report issues). Its options can be (incorrectly) set by hand when
@@ -220,6 +257,7 @@ func NewServer(opts *Options) (*Server, error) {
 		Proto:        PROTO,
 		GitCommit:    gitCommit,
 		GoVersion:    runtime.Version(),
+		Name:         serverName,
 		Host:         opts.Host,
 		Port:         opts.Port,
 		AuthRequired: false,
@@ -230,14 +268,16 @@ func NewServer(opts *Options) (*Server, error) {
 
 	now := time.Now()
 	s := &Server{
-		kp:         kp,
-		configFile: opts.ConfigFile,
-		info:       info,
-		prand:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		opts:       opts,
-		done:       make(chan bool, 1),
-		start:      now,
-		configTime: now,
+		kp:           kp,
+		configFile:   opts.ConfigFile,
+		info:         info,
+		prand:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		opts:         opts,
+		done:         make(chan bool, 1),
+		start:        now,
+		configTime:   now,
+		gwLeafSubs:   NewSublistWithCache(),
+		httpBasePath: httpBasePath,
 	}
 
 	// Trusted root operator keys.
@@ -257,11 +297,9 @@ func NewServer(opts *Options) (*Server, error) {
 	// Call this even if there is no gateway defined. It will
 	// initialize the structure so we don't have to check for
 	// it to be nil or not in various places in the code.
-	gws, err := newGateway(opts)
-	if err != nil {
+	if err := s.newGateway(opts); err != nil {
 		return nil, err
 	}
-	s.gateway = gws
 
 	if s.gateway.enabled {
 		s.info.Cluster = s.getGatewayName()
@@ -293,10 +331,57 @@ func NewServer(opts *Options) (*Server, error) {
 	// Used to kick out all go routines possibly waiting on server
 	// to shutdown.
 	s.quitCh = make(chan struct{})
+	// Closed when Shutdown() is complete. Allows WaitForShutdown() to block
+	// waiting for complete shutdown.
+	s.shutdownComplete = make(chan struct{})
 
 	// For tracking accounts
 	if err := s.configureAccounts(); err != nil {
 		return nil, err
+	}
+
+	// If there is an URL account resolver, do basic test to see if anyone is home.
+	// Do this after configureAccounts() which calls configureResolver(), which will
+	// set TLSConfig if specified.
+	if ar := opts.AccountResolver; ar != nil {
+		if ur, ok := ar.(*URLAccResolver); ok {
+			if _, err := ur.Fetch(""); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// In local config mode, check that leafnode configuration
+	// refers to account that exist.
+	if len(opts.TrustedOperators) == 0 {
+		checkAccountExists := func(accName string) error {
+			if accName == _EMPTY_ {
+				return nil
+			}
+			if _, ok := s.accounts.Load(accName); !ok {
+				return fmt.Errorf("cannot find account %q specified in leafnode authorization", accName)
+			}
+			return nil
+		}
+		if err := checkAccountExists(opts.LeafNode.Account); err != nil {
+			return nil, err
+		}
+		for _, lu := range opts.LeafNode.Users {
+			if lu.Account == nil {
+				continue
+			}
+			if err := checkAccountExists(lu.Account.Name); err != nil {
+				return nil, err
+			}
+		}
+		for _, r := range opts.LeafNode.Remotes {
+			if r.LocalAccount == _EMPTY_ {
+				continue
+			}
+			if _, ok := s.accounts.Load(r.LocalAccount); !ok {
+				return nil, fmt.Errorf("no local account %q for remote leafnode", r.LocalAccount)
+			}
+		}
 	}
 
 	// Used to setup Authorization.
@@ -308,6 +393,18 @@ func NewServer(opts *Options) (*Server, error) {
 	return s, nil
 }
 
+// ClientURL returns the URL used to connect clients. Helpful in testing
+// when we designate a random client port (-1).
+func (s *Server) ClientURL() string {
+	// FIXME(dlc) - should we add in user and pass if defined single?
+	opts := s.getOpts()
+	scheme := "nats://"
+	if opts.TLSConfig != nil {
+		scheme = "tls://"
+	}
+	return fmt.Sprintf("%s%s:%d", scheme, opts.Host, opts.Port)
+}
+
 func validateOptions(o *Options) error {
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {
@@ -316,6 +413,10 @@ func validateOptions(o *Options) error {
 	// Check on leaf nodes which will require a system
 	// account when gateways are also configured.
 	if err := validateLeafNode(o); err != nil {
+		return err
+	}
+	// Check that authentication is properly configured.
+	if err := validateAuth(o); err != nil {
 		return err
 	}
 	// Check that gateway is properly configured. Returns no error
@@ -344,11 +445,12 @@ func (s *Server) globalAccount() *Account {
 }
 
 // Used to setup Accounts.
+// Lock is held upon entry.
 func (s *Server) configureAccounts() error {
 	// Create global account.
 	if s.gacc == nil {
 		s.gacc = NewAccount(globalAccountName)
-		s.registerAccount(s.gacc)
+		s.registerAccountNoLock(s.gacc)
 	}
 
 	opts := s.opts
@@ -359,15 +461,12 @@ func (s *Server) configureAccounts() error {
 		a := acc.shallowCopy()
 		acc.sl = nil
 		acc.clients = nil
-		s.registerAccount(a)
+		s.registerAccountNoLock(a)
 	}
 
 	// Now that we have this we need to remap any referenced accounts in
 	// import or export maps to the new ones.
 	swapApproved := func(ea *exportAuth) {
-		if ea == nil {
-			return
-		}
 		for sub, a := range ea.approved {
 			var acc *Account
 			if v, ok := s.accounts.Load(a.Name); ok {
@@ -376,14 +475,19 @@ func (s *Server) configureAccounts() error {
 			ea.approved[sub] = acc
 		}
 	}
+
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
 		// Exports
 		for _, ea := range acc.exports.streams {
-			swapApproved(ea)
+			if ea != nil {
+				swapApproved(&ea.exportAuth)
+			}
 		}
 		for _, ea := range acc.exports.services {
-			swapApproved(ea)
+			if ea != nil {
+				swapApproved(&ea.exportAuth)
+			}
 		}
 		// Imports
 		for _, si := range acc.imports.streams {
@@ -406,10 +510,18 @@ func (s *Server) configureAccounts() error {
 
 	// Set the system account if it was configured.
 	if opts.SystemAccount != _EMPTY_ {
-		// Lock is held entering this function, so release to call lookupAccount.
+		// Lock may be acquired in lookupAccount, so release to call lookupAccount.
 		s.mu.Unlock()
-		_, err := s.lookupAccount(opts.SystemAccount)
+		acc, err := s.lookupAccount(opts.SystemAccount)
 		s.mu.Lock()
+		if err == nil && s.sys != nil && acc != s.sys.account {
+			// sys.account.clients (including internal client)/respmap/etc... are transferred separately
+			s.sys.account = acc
+			s.mu.Unlock()
+			// acquires server lock separately
+			s.addSystemAccountExports(acc)
+			s.mu.Lock()
+		}
 		if err != nil {
 			return fmt.Errorf("error resolving system account: %v", err)
 		}
@@ -418,21 +530,32 @@ func (s *Server) configureAccounts() error {
 	return nil
 }
 
-// Setup the memory resolver, make sure the JWTs are properly formed but do not
-// enforce expiration etc.
+// Setup the account resolver. For memory resolver, make sure the JWTs are
+// properly formed but do not enforce expiration etc.
 func (s *Server) configureResolver() error {
-	opts := s.opts
+	opts := s.getOpts()
 	s.accResolver = opts.AccountResolver
-	if opts.AccountResolver != nil && len(opts.resolverPreloads) > 0 {
-		if _, ok := s.accResolver.(*MemAccResolver); !ok {
-			return fmt.Errorf("resolver preloads only available for resolver type MEM")
-		}
-		for k, v := range opts.resolverPreloads {
-			_, err := jwt.DecodeAccountClaims(v)
-			if err != nil {
-				return fmt.Errorf("preload account error for %q: %v", k, err)
+	if opts.AccountResolver != nil {
+		// For URL resolver, set the TLSConfig if specified.
+		if opts.AccountResolverTLSConfig != nil {
+			if ar, ok := opts.AccountResolver.(*URLAccResolver); ok {
+				if t, ok := ar.c.Transport.(*http.Transport); ok {
+					t.CloseIdleConnections()
+					t.TLSClientConfig = opts.AccountResolverTLSConfig.Clone()
+				}
 			}
-			s.accResolver.Store(k, v)
+		}
+		if len(opts.resolverPreloads) > 0 {
+			if _, ok := s.accResolver.(*MemAccResolver); !ok {
+				return fmt.Errorf("resolver preloads only available for resolver type MEM")
+			}
+			for k, v := range opts.resolverPreloads {
+				_, err := jwt.DecodeAccountClaims(v)
+				if err != nil {
+					return fmt.Errorf("preload account error for %q: %v", k, err)
+				}
+				s.accResolver.Store(k, v)
+			}
 		}
 	}
 	return nil
@@ -621,67 +744,77 @@ func (s *Server) numAccounts() int {
 	return count
 }
 
+// NumLoadedAccounts returns the number of loaded accounts.
+func (s *Server) NumLoadedAccounts() int {
+	return s.numAccounts()
+}
+
 // LookupOrRegisterAccount will return the given account if known or create a new entry.
 func (s *Server) LookupOrRegisterAccount(name string) (account *Account, isNew bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if v, ok := s.accounts.Load(name); ok {
 		return v.(*Account), false
 	}
-	s.mu.Lock()
 	acc := NewAccount(name)
-	s.registerAccount(acc)
-	s.mu.Unlock()
+	s.registerAccountNoLock(acc)
 	return acc, true
 }
 
 // RegisterAccount will register an account. The account must be new
 // or this call will fail.
 func (s *Server) RegisterAccount(name string) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, ok := s.accounts.Load(name); ok {
 		return nil, ErrAccountExists
 	}
-	s.mu.Lock()
 	acc := NewAccount(name)
-	s.registerAccount(acc)
-	s.mu.Unlock()
+	s.registerAccountNoLock(acc)
 	return acc, nil
 }
 
 // SetSystemAccount will set the internal system account.
 // If root operators are present it will also check validity.
 func (s *Server) SetSystemAccount(accName string) error {
+	// Lookup from sync.Map first.
 	if v, ok := s.accounts.Load(accName); ok {
 		return s.setSystemAccount(v.(*Account))
 	}
 
-	s.mu.Lock()
 	// If we are here we do not have local knowledge of this account.
 	// Do this one by hand to return more useful error.
 	ac, jwt, err := s.fetchAccountClaims(accName)
 	if err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	acc := s.buildInternalAccount(ac)
 	acc.claimJWT = jwt
-	s.registerAccount(acc)
-	s.mu.Unlock()
-
+	// Due to race, we need to make sure that we are not
+	// registering twice.
+	if racc := s.registerAccount(acc); racc != nil {
+		return nil
+	}
 	return s.setSystemAccount(acc)
 }
 
 // SystemAccount returns the system account if set.
 func (s *Server) SystemAccount() *Account {
+	var sacc *Account
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.sys != nil {
-		return s.sys.account
+		sacc = s.sys.account
 	}
-	return nil
+	s.mu.Unlock()
+	return sacc
 }
 
+// For internal sends.
+const internalSendQLen = 4096
+
 // Assign a system account. Should only be called once.
-// This sets up a server to send and receive messages from inside
-// the server itself.
+// This sets up a server to send and receive messages from
+// inside the server itself.
 func (s *Server) setSystemAccount(acc *Account) error {
 	if acc == nil {
 		return ErrMissingAccount
@@ -703,14 +836,25 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		return ErrAccountExists
 	}
 
+	// This is here in an attempt to quiet the race detector and not have to place
+	// locks on fast path for inbound messages and checking service imports.
+	acc.mu.Lock()
+	if acc.imports.services == nil {
+		acc.imports.services = make(map[string]*serviceImport)
+	}
+	acc.mu.Unlock()
+
+	now := time.Now()
 	s.sys = &internal{
 		account: acc,
-		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: time.Now(), last: time.Now()},
+		client:  &client{srv: s, kind: SYSTEM, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now},
 		seq:     1,
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
 		subs:    make(map[string]msgHandler),
-		sendq:   make(chan *pubMsg, 128),
+		replies: make(map[string]msgHandler),
+		sendq:   make(chan *pubMsg, internalSendQLen),
+		resetCh: make(chan struct{}),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
@@ -722,6 +866,8 @@ func (s *Server) setSystemAccount(acc *Account) error {
 
 	// Register with the account.
 	s.sys.client.registerWithAccount(acc)
+
+	s.addSystemAccountExports(acc)
 
 	// Start our internal loop to serialize outbound messages.
 	// We do our own wg here since we will stop first during shutdown.
@@ -736,17 +882,16 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	// Send out statsz updates periodically.
 	s.wrapChk(s.startStatszTimer)()
 
-	return nil
-}
-
-func (s *Server) systemAccount() *Account {
-	var sacc *Account
+	// If we have existing accounts make sure we enable account tracking.
 	s.mu.Lock()
-	if s.sys != nil {
-		sacc = s.sys.account
-	}
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		s.enableAccountTracking(acc)
+		return true
+	})
 	s.mu.Unlock()
-	return sacc
+
+	return nil
 }
 
 // Determine if accounts should track subscriptions for
@@ -756,10 +901,19 @@ func (s *Server) shouldTrackSubscriptions() bool {
 	return (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0)
 }
 
-// Place common account setup here.
-// Lock should be held on entry.
-func (s *Server) registerAccount(acc *Account) {
-	if acc.sl == nil {
+// Invokes registerAccountNoLock under the protection of the server lock.
+// That is, server lock is acquired/released in this function.
+// See registerAccountNoLock for comment on returned value.
+func (s *Server) registerAccount(acc *Account) *Account {
+	s.mu.Lock()
+	racc := s.registerAccountNoLock(acc)
+	s.mu.Unlock()
+	return racc
+}
+
+// Helper to set the sublist based on preferences.
+func (s *Server) setAccountSublist(acc *Account) {
+	if acc != nil && acc.sl == nil {
 		opts := s.getOpts()
 		if opts != nil && opts.NoSublistCache {
 			acc.sl = NewSublistNoCache()
@@ -767,14 +921,33 @@ func (s *Server) registerAccount(acc *Account) {
 			acc.sl = NewSublistWithCache()
 		}
 	}
+}
+
+// Registers an account in the server.
+// Due to some locking considerations, we may end-up trying
+// to register the same account twice. This function will
+// then return the already registered account.
+// Lock should be held on entry.
+func (s *Server) registerAccountNoLock(acc *Account) *Account {
+	// We are under the server lock. Lookup from map, if present
+	// return existing account.
+	if a, _ := s.accounts.Load(acc.Name); a != nil {
+		s.tmpAccounts.Delete(acc.Name)
+		return a.(*Account)
+	}
+	// Finish account setup and store.
+	s.setAccountSublist(acc)
 	if acc.maxnae == 0 {
 		acc.maxnae = DEFAULT_MAX_ACCOUNT_AE_RESPONSE_MAPS
 	}
 	if acc.maxaettl == 0 {
 		acc.maxaettl = DEFAULT_TTL_AE_RESPONSE_MAP
 	}
+	if acc.maxnrm == 0 {
+		acc.maxnrm = DEFAULT_MAX_ACCOUNT_INTERNAL_RESPONSE_MAPS
+	}
 	if acc.clients == nil {
-		acc.clients = make(map[*client]*client)
+		acc.clients = make(map[*client]struct{})
 	}
 	// If we are capable of routing we will track subscription
 	// information for efficient interest propagation.
@@ -785,43 +958,47 @@ func (s *Server) registerAccount(acc *Account) {
 	// TODO(dlc)- Double check that we need this for GWs.
 	if acc.rm == nil && s.opts != nil && s.shouldTrackSubscriptions() {
 		acc.rm = make(map[string]int32)
+		acc.lqws = make(map[string]int32)
 	}
 	acc.srv = s
 	acc.mu.Unlock()
 	s.accounts.Store(acc.Name, acc)
+	s.tmpAccounts.Delete(acc.Name)
 	s.enableAccountTracking(acc)
+	return nil
 }
 
 // lookupAccount is a function to return the account structure
 // associated with an account name.
+// Lock MUST NOT be held upon entry.
 func (s *Server) lookupAccount(name string) (*Account, error) {
+	var acc *Account
 	if v, ok := s.accounts.Load(name); ok {
-		acc := v.(*Account)
+		acc = v.(*Account)
+	} else if v, ok := s.tmpAccounts.Load(name); ok {
+		acc = v.(*Account)
+	}
+	if acc != nil {
 		// If we are expired and we have a resolver, then
 		// return the latest information from the resolver.
 		if acc.IsExpired() {
 			s.Debugf("Requested account [%s] has expired", name)
-			var err error
-			s.mu.Lock()
-			if s.accResolver != nil {
-				err = s.updateAccount(acc)
-			}
-			s.mu.Unlock()
-			if err != nil {
-				// This error could mask expired, so just return expired here.
+			if s.AccountResolver() != nil {
+				if err := s.updateAccount(acc); err != nil {
+					// This error could mask expired, so just return expired here.
+					return nil, ErrAccountExpired
+				}
+			} else {
 				return nil, ErrAccountExpired
 			}
 		}
 		return acc, nil
 	}
 	// If we have a resolver see if it can fetch the account.
-	if s.accResolver == nil {
+	if s.AccountResolver() == nil {
 		return nil, ErrMissingAccount
 	}
-	s.mu.Lock()
-	acc, err := s.fetchAccount(name)
-	s.mu.Unlock()
-	return acc, err
+	return s.fetchAccount(name)
 }
 
 // LookupAccount is a public function to return the account structure
@@ -831,7 +1008,7 @@ func (s *Server) LookupAccount(name string) (*Account, error) {
 }
 
 // This will fetch new claims and if found update the account with new claims.
-// Lock should be held upon entry.
+// Lock MUST NOT be held upon entry.
 func (s *Server) updateAccount(acc *Account) error {
 	// TODO(dlc) - Make configurable
 	if time.Since(acc.updated) < time.Second {
@@ -846,6 +1023,7 @@ func (s *Server) updateAccount(acc *Account) error {
 }
 
 // updateAccountWithClaimJWT will check and apply the claim update.
+// Lock MUST NOT be held upon entry.
 func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error {
 	if acc == nil {
 		return ErrMissingAccount
@@ -865,32 +1043,30 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 }
 
 // fetchRawAccountClaims will grab raw account claims iff we have a resolver.
-// Lock is held upon entry.
+// Lock is NOT held upon entry.
 func (s *Server) fetchRawAccountClaims(name string) (string, error) {
-	accResolver := s.accResolver
+	accResolver := s.AccountResolver()
 	if accResolver == nil {
 		return "", ErrNoAccountResolver
 	}
-	// Need to do actual Fetch without the lock.
-	s.mu.Unlock()
+	// Need to do actual Fetch
 	start := time.Now()
 	claimJWT, err := accResolver.Fetch(name)
 	fetchTime := time.Since(start)
-	s.mu.Lock()
 	if fetchTime > time.Second {
-		s.Warnf("Account [%s] fetch took %v\n", name, fetchTime)
+		s.Warnf("Account [%s] fetch took %v", name, fetchTime)
 	} else {
-		s.Debugf("Account [%s] fetch took %v\n", name, fetchTime)
+		s.Debugf("Account [%s] fetch took %v", name, fetchTime)
 	}
 	if err != nil {
-		s.Warnf("Account fetch failed: %v\n", err)
+		s.Warnf("Account fetch failed: %v", err)
 		return "", err
 	}
 	return claimJWT, nil
 }
 
 // fetchAccountClaims will attempt to fetch new claims if a resolver is present.
-// Lock is held upon entry.
+// Lock is NOT held upon entry.
 func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, string, error) {
 	claimJWT, err := s.fetchRawAccountClaims(name)
 	if err != nil {
@@ -914,27 +1090,25 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 }
 
 // This will fetch an account from a resolver if defined.
-// Lock should be held upon entry.
+// Lock is NOT held upon entry.
 func (s *Server) fetchAccount(name string) (*Account, error) {
 	accClaims, claimJWT, err := s.fetchAccountClaims(name)
 	if accClaims != nil {
-		// We have released the lock during the low level fetch.
-		// Now that we are back under lock, check again if account
-		// is in the map or not. If it is, simply return it.
-		if v, ok := s.accounts.Load(name); ok {
-			acc := v.(*Account)
+		acc := s.buildInternalAccount(accClaims)
+		acc.claimJWT = claimJWT
+		// Due to possible race, if registerAccount() returns a non
+		// nil account, it means the same account was already
+		// registered and we should use this one.
+		if racc := s.registerAccount(acc); racc != nil {
 			// Update with the new claims in case they are new.
 			// Following call will return ErrAccountResolverSameClaims
 			// if claims are the same.
-			err = s.updateAccountWithClaimJWT(acc, claimJWT)
+			err = s.updateAccountWithClaimJWT(racc, claimJWT)
 			if err != nil && err != ErrAccountResolverSameClaims {
 				return nil, err
 			}
-			return acc, nil
+			return racc, nil
 		}
-		acc := s.buildInternalAccount(accClaims)
-		acc.claimJWT = claimJWT
-		s.registerAccount(acc)
 		return acc, nil
 	}
 	return nil, err
@@ -999,13 +1173,17 @@ func (s *Server) Start() {
 		return
 	}
 
-	// Setup system account which will start eventing stack.
+	// Setup system account which will start the eventing stack.
 	if sa := opts.SystemAccount; sa != _EMPTY_ {
 		if err := s.SetSystemAccount(sa); err != nil {
 			s.Fatalf("Can't set system account: %v", err)
 			return
 		}
 	}
+
+	// Start expiration of mapped GW replies, regardless if
+	// this server is configured with gateway or not.
+	s.startGWReplyMapExpiration()
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
@@ -1068,7 +1246,7 @@ func (s *Server) Shutdown() {
 		s.mu.Unlock()
 		return
 	}
-	s.Noticef("Server Exiting..")
+	s.Noticef("Initiating Shutdown...")
 
 	opts := s.getOpts()
 
@@ -1171,6 +1349,7 @@ func (s *Server) Shutdown() {
 		s.deletePortsFile(opts.PortsFileDir)
 	}
 
+	s.Noticef("Server Exiting..")
 	// Close logger if applicable. It allows tests on Windows
 	// to be able to do proper cleanup (delete log file).
 	s.logging.RLock()
@@ -1181,6 +1360,13 @@ func (s *Server) Shutdown() {
 			l.Close()
 		}
 	}
+	// Notify that the shutdown is complete
+	close(s.shutdownComplete)
+}
+
+// WaitForShutdown will block until the server has been fully shutdown.
+func (s *Server) WaitForShutdown() {
+	<-s.shutdownComplete
 }
 
 // AcceptLoop is exported for easier testing.
@@ -1333,6 +1519,7 @@ func (s *Server) StartProfiler() {
 				s.Fatalf("error starting profiler: %s", err)
 			}
 		}
+		srv.Close()
 		s.done <- true
 	}()
 }
@@ -1377,9 +1564,14 @@ const (
 	ConnzPath    = "/connz"
 	RoutezPath   = "/routez"
 	GatewayzPath = "/gatewayz"
+	LeafzPath    = "/leafz"
 	SubszPath    = "/subsz"
 	StackszPath  = "/stacksz"
 )
+
+func (s *Server) basePath(p string) string {
+	return path.Join(s.httpBasePath, p)
+}
 
 // Start the monitoring server
 func (s *Server) startMonitoring(secure bool) error {
@@ -1435,21 +1627,23 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux := http.NewServeMux()
 
 	// Root
-	mux.HandleFunc(RootPath, s.HandleRoot)
+	mux.HandleFunc(s.basePath(RootPath), s.HandleRoot)
 	// Varz
-	mux.HandleFunc(VarzPath, s.HandleVarz)
+	mux.HandleFunc(s.basePath(VarzPath), s.HandleVarz)
 	// Connz
-	mux.HandleFunc(ConnzPath, s.HandleConnz)
+	mux.HandleFunc(s.basePath(ConnzPath), s.HandleConnz)
 	// Routez
-	mux.HandleFunc(RoutezPath, s.HandleRoutez)
+	mux.HandleFunc(s.basePath(RoutezPath), s.HandleRoutez)
 	// Gatewayz
-	mux.HandleFunc(GatewayzPath, s.HandleGatewayz)
+	mux.HandleFunc(s.basePath(GatewayzPath), s.HandleGatewayz)
+	// Leafz
+	mux.HandleFunc(s.basePath(LeafzPath), s.HandleLeafz)
 	// Subz
-	mux.HandleFunc(SubszPath, s.HandleSubsz)
+	mux.HandleFunc(s.basePath(SubszPath), s.HandleSubsz)
 	// Subz alias for backwards compatibility
-	mux.HandleFunc("/subscriptionsz", s.HandleSubsz)
+	mux.HandleFunc(s.basePath("/subscriptionsz"), s.HandleSubsz)
 	// Stacksz
-	mux.HandleFunc(StackszPath, s.HandleStacksz)
+	mux.HandleFunc(s.basePath(StackszPath), s.HandleStacksz)
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
@@ -1474,6 +1668,7 @@ func (s *Server) startMonitoring(secure bool) error {
 				s.Fatalf("Error starting monitor on %q: %v", hp, err)
 			}
 		}
+		srv.Close()
 		srv.Handler = nil
 		s.mu.Lock()
 		s.httpHandler = nil
@@ -1537,6 +1732,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Grab lock
 	c.mu.Lock()
+	if info.AuthRequired {
+		c.flags.set(expectConnect)
+	}
 
 	// Initialize
 	c.initClient()
@@ -1544,7 +1742,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.Debugf("Client connection created")
 
 	// Send our information.
-	c.sendInfo(c.generateClientInfoJSON(info))
+	// Need to be sent in place since writeLoop cannot be started until
+	// TLS handshake is done (if applicable).
+	c.sendProtoNow(c.generateClientInfoJSON(info))
 
 	// Unlock to register
 	c.mu.Unlock()
@@ -1602,8 +1802,14 @@ func (s *Server) createClient(conn net.Conn) *client {
 	}
 
 	// The connection may have been closed
-	if c.nc == nil {
+	if c.isClosed() {
 		c.mu.Unlock()
+		// If it was due to TLS timeout, teardownConn() has already been called.
+		// Otherwise, if connection was marked as closed while sending the INFO,
+		// we need to call teardownConn() directly here.
+		if !info.TLSRequired {
+			c.teardownConn()
+		}
 		return c
 	}
 
@@ -1616,8 +1822,8 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Do final client initialization
 
-	// Set the First Ping timer.
-	c.setFirstPingTimer(opts.PingInterval)
+	// Set the Ping timer. Will be reset once connect was received.
+	c.setPingTimer()
 
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop() })
@@ -1652,13 +1858,17 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 
 	// Do subs, do not place by default in main ConnInfo
 	if len(c.subs) > 0 {
-		cc.subs = make([]string, 0, len(c.subs))
+		cc.subs = make([]SubDetail, 0, len(c.subs))
 		for _, sub := range c.subs {
-			cc.subs = append(cc.subs, string(sub.subject))
+			cc.subs = append(cc.subs, newSubDetail(sub))
 		}
 	}
 	// Hold user as well.
 	cc.user = c.opts.Username
+	// Hold account name if not the global account.
+	if c.acc != nil && c.acc.Name != globalAccountName {
+		cc.acc = c.acc.Name
+	}
 	c.mu.Unlock()
 
 	// Place in the ring buffer
@@ -1726,10 +1936,10 @@ func (s *Server) updateServerINFOAndSendINFOToClients(urls []string, add bool) {
 // Handle closing down a connection when the handshake has timedout.
 func tlsTimeout(c *client, conn *tls.Conn) {
 	c.mu.Lock()
-	nc := c.nc
+	closed := c.isClosed()
 	c.mu.Unlock()
 	// Check if already closed
-	if nc == nil {
+	if closed {
 		return
 	}
 	cs := conn.ConnectionState()
@@ -1749,8 +1959,10 @@ func tlsVersion(ver uint16) string {
 		return "1.1"
 	case tls.VersionTLS12:
 		return "1.2"
+	case tls.VersionTLS13:
+		return "1.3"
 	}
-	return fmt.Sprintf("Unknown [%x]", ver)
+	return fmt.Sprintf("Unknown [0x%x]", ver)
 }
 
 // We use hex here so we don't need multiple versions
@@ -1759,7 +1971,7 @@ func tlsCipher(cs uint16) string {
 	if present {
 		return name
 	}
-	return fmt.Sprintf("Unknown [%x]", cs)
+	return fmt.Sprintf("Unknown [0x%x]", cs)
 }
 
 // Remove a client or route from our internal accounting.
@@ -2433,4 +2645,27 @@ func (s *Server) shouldReportConnectErr(firstConnect bool, attempts int) bool {
 		return true
 	}
 	return false
+}
+
+// Invoked for route, leaf and gateway connections. Set the very first
+// PING to a lower interval to capture the initial RTT.
+// After that the PING interval will be set to the user defined value.
+// Client lock should be held.
+func (s *Server) setFirstPingTimer(c *client) {
+	opts := s.getOpts()
+	d := opts.PingInterval
+
+	if !opts.DisableShortFirstPing {
+		if c.kind != CLIENT {
+			if d > firstPingInterval {
+				d = firstPingInterval
+			}
+		} else if d > firstClientPingInterval {
+			d = firstClientPingInterval
+		}
+	}
+	// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
+	addDelay := rand.Int63n(int64(d / 5))
+	d += time.Duration(addDelay)
+	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
