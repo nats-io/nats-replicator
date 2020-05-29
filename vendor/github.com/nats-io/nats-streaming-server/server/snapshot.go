@@ -1,4 +1,4 @@
-// Copyright 2017-2019 The NATS Authors
+// Copyright 2017-2020 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,6 +16,7 @@ package server
 import (
 	"fmt"
 	"io"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +43,9 @@ const (
 	// Used as requests inbox's suffix and reply subject of response messages
 	// to indicate that this is from a 0.14.2+ server.
 	restoreMsgsV2 = "sfa"
+	// Suffix added to reply subject when leader is sending the first available
+	// message
+	restoreMsgsFirstAvailSuffix = ".first"
 )
 
 // serverSnapshot implements the raft.FSMSnapshot interface by snapshotting
@@ -183,6 +187,7 @@ func (s *serverSnapshot) snapshotChannels(snap *spb.RaftSnapshot) error {
 			First:     first,
 			Last:      last,
 			NextSubID: c.nextSubID,
+			ChannelID: c.id,
 		}
 
 		// Start with count of all plain subs...
@@ -254,60 +259,32 @@ func (r *raftFSM) Restore(snapshot io.ReadCloser) (retErr error) {
 
 	shouldSnapshot := false
 	defer func() {
-		if retErr == nil && shouldSnapshot {
-			s.wg.Add(1)
-			go func() {
-				defer s.wg.Done()
-				// s.raft.Snapshot() is actually s.raft.Raft.Snapshot()
-				// (our raft structure embeds Raft). But it is set after
-				// the call to NewRaft() - which invokes this function on
-				// startup. However, this runs under the server's lock, so
-				// simply grab the lock to ensure that Snapshot() will be
-				// able to execute.
-				// Also don't use startGoRoutine() here since it needs the
-				// server lock, which we already have.
-				s.mu.Lock()
-				s.raft.Snapshot().Error()
-				s.mu.Unlock()
-			}()
+		if retErr == nil {
+			s.log.Noticef("done restoring from snapshot")
+			r.restoreFromInit = false
+			if shouldSnapshot {
+				s.wg.Add(1)
+				go func() {
+					defer s.wg.Done()
+					// s.raft.Snapshot() is actually s.raft.Raft.Snapshot()
+					// (our raft structure embeds Raft). But it is set after
+					// the call to NewRaft() - which invokes this function on
+					// startup. However, this runs under the server's lock, so
+					// simply grab the lock to ensure that Snapshot() will be
+					// able to execute.
+					// Also don't use startGoRoutine() here since it needs the
+					// server lock, which we already have.
+					s.mu.Lock()
+					s.raft.Snapshot().Error()
+					s.mu.Unlock()
+				}()
+			}
+		} else {
+			s.log.Errorf("error restoring from snapshot: %v", retErr)
 		}
 	}()
 
-	// This function may be invoked directly from raft.NewRaft() when
-	// the node is initialized and if there were exisiting local snapshots,
-	// or later, when catching up with a leader. We behave differently
-	// depending on the situation. So we need to know if we are called
-	// from NewRaft().
-	//
-	// To do so, we first look at the number of local snapshots before
-	// calling NewRaft(). If the number is > 0, it means that Raft will
-	// call us within NewRaft(). Raft will restore the latest snapshot
-	// first, and only in case of Restore() returning an error will move
-	// to the next (earliest) one. When there are none and Restore() still
-	// returns an error raft.NewRaft() will return an error.
-	//
-	// So on error we decrement the number of snapshots, on success we set
-	// it to 0. This means that next time Restore() is invoked, we know it
-	// is restoring from a leader, not from the local snapshots.
-	inNewRaftCall := r.snapshotsOnInit != 0
-	if inNewRaftCall {
-		defer func() {
-			if retErr != nil {
-				r.snapshotsOnInit--
-			} else {
-				r.snapshotsOnInit = 0
-			}
-		}()
-	} else {
-		s.log.Noticef("restoring from snapshot")
-		defer func() {
-			if retErr == nil {
-				s.log.Noticef("done restoring from snapshot")
-			} else {
-				s.log.Errorf("error restoring from snapshot: %v", retErr)
-			}
-		}()
-	}
+	s.log.Noticef("restoring from snapshot")
 
 	// We need to drop current state. The server will recover from snapshot
 	// and all newer Raft entry logs (basically the entire state is being
@@ -346,13 +323,13 @@ func (r *raftFSM) Restore(snapshot io.ReadCloser) (retErr error) {
 
 	serverSnap := &spb.RaftSnapshot{}
 	if err := serverSnap.Unmarshal(buf); err != nil {
-		panic(err)
+		return fmt.Errorf("error decoding snapshot record: %v", err)
 	}
 	if err := r.restoreClientsFromSnapshot(serverSnap); err != nil {
 		return err
 	}
 	var err error
-	shouldSnapshot, err = r.restoreChannelsFromSnapshot(serverSnap, inNewRaftCall)
+	shouldSnapshot, err = r.restoreChannelsFromSnapshot(serverSnap, r.restoreFromInit)
 	return err
 }
 
@@ -376,10 +353,25 @@ func (r *raftFSM) restoreChannelsFromSnapshot(serverSnap *spb.RaftSnapshot, inNe
 		channelsBeforeRestore = s.channels.getAll()
 	}
 	for _, sc := range serverSnap.Channels {
-		c, err := s.lookupOrCreateChannel(sc.Channel)
-		if err != nil {
-			return false, err
+		var c *channel
+		var err error
+		if inNewRaftCall {
+			// When starting the node and recovering from a local snapshot,
+			// ignore if the channel did not exist in our streaming store
+			// or if its ID does not match the one in the snapshot operation.
+			if c = r.lookupChannel(sc.Channel, sc.ChannelID); c == nil {
+				continue
+			}
+		} else {
+			// When restoring from a snapshot at runtime, this function will
+			// return the channel if it has the same ID, otherwise will create
+			// the channel (will first delete the old one if it exits).
+			c, err = r.lookupOrCreateChannel(sc.Channel, sc.ChannelID)
+			if err != nil {
+				return false, err
+			}
 		}
+		s.log.Noticef("restoring channel %q from snapshot", sc.Channel)
 		// Keep track of first/last sequence in this channel's snapshot.
 		// It can help to detect that all messages in the leader have expired
 		// and this is what we should report/use as our store first/last.
@@ -394,23 +386,31 @@ func (r *raftFSM) restoreChannelsFromSnapshot(serverSnap *spb.RaftSnapshot, inNe
 		// messages and fail, keep trying until a leader is avail and
 		// able to serve this node.
 		ok := false
-		for i := 0; i < restoreMsgsAttempts; i++ {
+		for i := 0; !ok && i < restoreMsgsAttempts; i++ {
 			if err := r.restoreMsgsFromSnapshot(c, sc.First, sc.Last, false); err != nil {
-				s.log.Errorf("channel %q - unable to restore messages, can't start until leader is available",
-					sc.Channel)
-				time.Sleep(restoreMsgsSleepBetweenAttempts)
+				sf, sl, _ := c.store.Msgs.FirstAndLastSequence()
+				s.log.Errorf("channel %q - unable to restore messages (snapshot %v/%v, store %v/%v, cfs %v): %v",
+					sc.Channel, sc.First, sc.Last, sf, sl, atomic.LoadUint64(&c.firstSeq), err)
+				select {
+				case <-time.After(restoreMsgsSleepBetweenAttempts):
+				case <-s.shutdownCh:
+					return false, fmt.Errorf("server shutting down")
+				}
 			} else {
 				ok = true
-				break
 			}
 		}
 		if !ok {
-			err = fmt.Errorf("channel %q - unable to restore messages, aborting", sc.Channel)
-			s.log.Fatalf(err.Error())
-			// In tests, we use a "dummy" logger, so process will not exit
-			// (and we would not want that anyway), so make sure we return
-			// an error.
-			return false, err
+			if s.opts.Clustering.ProceedOnRestoreFailure {
+				s.log.Errorf("channel %q - was not able to restore from the leader, proceeding anyway")
+			} else {
+				err = fmt.Errorf("channel %q - unable to restore messages, aborting", sc.Channel)
+				s.log.Fatalf(err.Error())
+				// In tests, we use a "dummy" logger, so process will not exit
+				// (and we would not want that anyway), so make sure we return
+				// an error.
+				return false, err
+			}
 		}
 		if !inNewRaftCall {
 			delete(channelsBeforeRestore, sc.Channel)
@@ -425,8 +425,8 @@ func (r *raftFSM) restoreChannelsFromSnapshot(serverSnap *spb.RaftSnapshot, inNe
 		c.lSeqChecked = false
 
 		for _, ss := range sc.Subscriptions {
-			s.recoverOneSub(c, ss.State, nil, ss.AcksPending)
 			c.ss.Lock()
+			s.recoverOneSub(c, ss.State, nil, ss.AcksPending)
 			if ss.State.ID >= c.nextSubID {
 				c.nextSubID = ss.State.ID + 1
 			}
@@ -560,18 +560,30 @@ func (r *raftFSM) restoreMsgsFromSnapshot(c *channel, first, last uint64, fromAp
 			cnfcount = 0
 			msg := &pb.MsgProto{}
 			if err := msg.Unmarshal(resp.Data); err != nil {
-				panic(err)
+				return fmt.Errorf("error decoding message: %v", err)
 			}
 			// Server 0.14.2+ may send us the first available message if
 			// the requested one is not available. So check the message
-			// sequence. (we could ensure that reply subject is
-			// restoreMsgsV2, but it is not required).
+			// sequence.
 			if msg.Sequence != seq {
+				// Servers 0.16.1+ send the response with a Reply that
+				// indicates if this is the first available message.
+				// Because unless the msg.Sequence is > reqEnd, which
+				// is the only case where the leader could send a message
+				// (and only one) outside of our request range, there
+				// is no way to know if this is really the first available
+				// message or some messages were lost in transit.
+				if !strings.HasSuffix(resp.Reply, restoreMsgsFirstAvailSuffix) && seq <= reqEnd {
+					// Ensure this is really the first available, otherwise
+					// return an error, the restore will be retried.
+					if first, err := s.hasLeaderSentFirstAvail(subject, seq, msg.Sequence); !first || err != nil {
+						return fmt.Errorf("expected to restore message %v, got %v (err=%v)", seq, msg.Sequence, err)
+					}
+				}
 				// Any prior messages are now invalid, so empty our store.
 				if err := c.store.Msgs.Empty(); err != nil {
 					return err
 				}
-				stored = false
 				// Set the channel's first sequence, but not past the
 				// `last` that we use in our for-loop.
 				if msg.Sequence > last {
@@ -642,6 +654,33 @@ func (r *raftFSM) restoreMsgsFromSnapshot(c *channel, first, last uint64, fromAp
 		}
 	}
 	return c.store.Msgs.Flush()
+}
+
+// This function will create a new ephemeral subscription and ask for a
+// single message sequence `reqSeq` and expect to get a response with
+// a message sequence `gotSeq`. If that is the case, this functions
+// returns true, and returns false otherwise.
+func (s *StanServer) hasLeaderSentFirstAvail(subject string, reqSeq, gotSeq uint64) (bool, error) {
+	inbox := nats.NewInbox() + "." + restoreMsgsV2
+	sub, err := s.ncsr.SubscribeSync(inbox)
+	if err != nil {
+		return false, err
+	}
+	defer sub.Unsubscribe()
+	rawMsg, err := s.restoreMsgsFetchOne(subject, inbox, sub, reqSeq)
+	if err != nil {
+		return false, err
+	}
+	if len(rawMsg.Data) > 0 {
+		msg := &pb.MsgProto{}
+		if err := msg.Unmarshal(rawMsg.Data); err != nil {
+			return false, err
+		}
+		if msg.Sequence == gotSeq {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Sends individual requests to leader server (pre 0.14.1) in order to

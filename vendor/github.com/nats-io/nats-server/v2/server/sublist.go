@@ -700,6 +700,28 @@ type SublistStats struct {
 	CacheHitRate float64 `json:"cache_hit_rate"`
 	MaxFanout    uint32  `json:"max_fanout"`
 	AvgFanout    float64 `json:"avg_fanout"`
+	totFanout    int
+	cacheCnt     int
+}
+
+func (s *SublistStats) add(stat *SublistStats) {
+	s.NumSubs += stat.NumSubs
+	s.NumCache += stat.NumCache
+	s.NumInserts += stat.NumInserts
+	s.NumRemoves += stat.NumRemoves
+	s.NumMatches += stat.NumMatches
+	s.CacheHitRate += stat.CacheHitRate
+	if s.MaxFanout < stat.MaxFanout {
+		s.MaxFanout = stat.MaxFanout
+	}
+
+	// ignore slStats.AvgFanout, collect the values
+	// it's based on instead
+	s.totFanout += stat.totFanout
+	s.cacheCnt += stat.cacheCnt
+	if s.totFanout > 0 {
+		s.AvgFanout = float64(s.totFanout) / float64(s.cacheCnt)
+	}
 }
 
 // Stats will return a stats structure for the current state.
@@ -735,6 +757,8 @@ func (s *Sublist) Stats() *SublistStats {
 			}
 			return true
 		})
+		st.totFanout = tot
+		st.cacheCnt = clen
 		st.MaxFanout = uint32(max)
 		if tot > 0 {
 			st.AvgFanout = float64(tot) / float64(clen)
@@ -800,6 +824,11 @@ func subjectIsLiteral(subject string) bool {
 		}
 	}
 	return true
+}
+
+// IsValidPublishSubject returns true if a subject is valid and a literal, false otherwise
+func IsValidPublishSubject(subject string) bool {
+	return IsValidSubject(subject) && subjectIsLiteral(subject)
 }
 
 // IsValidSubject returns true if a subject is valid, false otherwise
@@ -878,11 +907,19 @@ func isSubsetMatch(tokens []string, test string) bool {
 		if i >= len(tokens) {
 			return false
 		}
-		if t2[0] == fwc && len(t2) == 1 {
+		l := len(t2)
+		if l == 0 {
+			return false
+		}
+		if t2[0] == fwc && l == 1 {
 			return true
 		}
 		t1 := tokens[i]
-		if t1[0] == fwc && len(t1) == 1 {
+		l = len(t1)
+		if l == 0 {
+			return false
+		}
+		if t1[0] == fwc && l == 1 {
 			return false
 		}
 		if t1[0] == pwc && len(t1) == 1 {
@@ -974,7 +1011,7 @@ func matchLiteral(literal, subject string) bool {
 }
 
 func addLocalSub(sub *subscription, subs *[]*subscription) {
-	if sub != nil && sub.client != nil && sub.client.kind == CLIENT && sub.im == nil {
+	if sub != nil && sub.client != nil && (sub.client.kind == CLIENT || sub.client.kind == SYSTEM) && sub.im == nil {
 		*subs = append(*subs, sub)
 	}
 }
@@ -1057,4 +1094,18 @@ func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
 		s.addAllNodeToSubs(l.fwc, subs)
 		s.collectAllSubs(l.fwc.next, subs)
 	}
+}
+
+// Helper to get the first result sub.
+func firstSubFromResult(rr *SublistResult) *subscription {
+	if rr == nil {
+		return nil
+	}
+	if len(rr.psubs) > 0 {
+		return rr.psubs[0]
+	}
+	if len(rr.qsubs) > 0 {
+		return rr.qsubs[0][0]
+	}
+	return nil
 }
