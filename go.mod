@@ -9,4 +9,6 @@ require (
 	github.com/nats-io/nuid v1.0.1
 	github.com/nats-io/stan.go v0.5.0
 	github.com/stretchr/testify v1.3.0
+	golang.org/x/tools v0.0.0-20200903185744-af4cc2cd812e // indirect
+	honnef.co/go/tools v0.0.1-2020.1.5 // indirect
 )

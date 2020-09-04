@@ -99,7 +99,13 @@ func (conn *Stan2NATSConnector) Start() error {
 		return fmt.Errorf("%s connector requires stan connection named %s to be available", conn.String(), incoming)
 	}
 
-	sub, err := sc.Subscribe(conn.config.IncomingChannel, callback, options...)
+	var sub stan.Subscription
+	var err error
+	if conn.config.IncomingQueueName == "" {
+		sub, err = sc.Subscribe(conn.config.IncomingChannel, callback, options...)
+	} else {
+		sub, err = sc.QueueSubscribe(conn.config.IncomingChannel, conn.config.IncomingQueueName, callback, options...)
+	}
 	if err != nil {
 		return err
 	}
