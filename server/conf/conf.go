@@ -172,7 +172,7 @@ type ConnectorConfig struct {
 	IncomingAckWait         int64  `conf:"incoming_ack_wait"`         // max wait time in Milliseconds for the incoming subscription
 
 	IncomingSubject   string `conf:"incoming_subject"`    // Used for nats connections
-	IncomingQueueName string `conf:"incoming_queue_name"` // Optional, used for nats connections
+	IncomingQueueName string `conf:"incoming_queue_name"` // Optional, used for nats/stan connections
 
 	OutgoingChannel string `conf:"outgoing_channel"` // Used for stan connections
 	OutgoingSubject string `conf:"outgoing_subject"` // Used for nats connections

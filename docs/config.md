@@ -217,6 +217,7 @@ For streaming connections, the channel setting is required (directionality depen
 * `incomingchannel` or `incoming_channel` - the streaming channel to subscribe to.
 * `outgoingchannel` or `outgoing_channel` - the streaming channel to publish to.
 * `incomingdurablename` or `incoming_durable_name` - (optional) durable name for the streaming subscription (if appropriate.)
+* `incomingqueuename` or `incoming_queue_name` - the queue group to use in subscriptions, this is optional but useful for load balancing.
 * `incomingstartatsequence` or `incoming_startat_sequence` - (optional) start position, use -1 for start with last received, 0 for deliver all available (the default.)
 * `incomingstartattime` or `incoming_startat_time` - (optional) the start position as a time, in Unix seconds since the epoch, mutually exclusive with `startatsequence`.
 
